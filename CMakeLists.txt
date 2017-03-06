@@ -1,4 +1,4 @@
-project(nbody)
+project(nbsystem)
 cmake_minimum_required(VERSION 2.8)
 aux_source_directory(. SRC_LIST)
 #find_package(OpenCL REQUIRED)

@@ -3,15 +3,19 @@
 NBSystem::NBSystem()
 {
     pnum = 0;
+    vnum = 0;
     enIn = 0;
     enKin = 0;
     enPot = 0;
     timeCur = 0;
     timeEnd = 0;
-    timeStep = 0;
-    timeStepMax= 0;
+    dt = 0;
+    tsNum = 0;
     outPrec = 6;
     dtCoef = 0.01;
+    syncFlag = false;
+
+    curBuffIndex = 0;
 
     // Default setting is to select first available cpu device
     setupCL(-1, CL_DEVICE_TYPE_CPU);
@@ -35,72 +39,80 @@ double NBSystem::getEnIn()
 
 double NBSystem::getEnPot()
 {
-    return enPot;
+    return getEnPot(event);
 }
 
 double NBSystem::getEnKin()
 {
-    return enKin;
+    return getEnKin(event);
 }
 
 double NBSystem::getEnTot()
 {
-    return enKin + enPot;
+    return getEnPot(event) + getEnKin(event);
 }
 
-void NBSystem::setTimeEnd(double &time)
+void NBSystem::addParticle(cl_float4 &p, cl_float4 &v)
 {
-    timeEnd = time;
-}
-
-void NBSystem::setTimeStepMax(double &time)
-{
-    timeStepMax = time;
-}
-
-void NBSystem::addParticle(cl_float &m, cl_float4 &p, cl_float4 &v)
-{
-    p.s3 = m;
     pos.emplace_back(p);
     vel.emplace_back(v);
     pnum++;
 }
 
-void NBSystem::addParticle(std::vector<float> &mass,
-                 std::vector<cl_float4> &pos,
+void NBSystem::addParticle(std::vector<cl_float4> &pos,
                  std::vector<cl_float4> &vel)
 {
-    if (mass.size() != pos.size() ||  mass.size() != vel.size())
+    if (pos.size() != vel.size())
         throw std::runtime_error("Sizes of particle state vectors"
                                  " (mass, pos, vel) are not equal.");
-    unsigned int num = mass.size();
+    if (timeCur != 0) {
+        queue.enqueueReadBuffer(d_pos[curBuffIndex],
+                                CL_TRUE, 0, vectBuffSize, pos.data());
+        queue.enqueueReadBuffer(d_vel,
+                                CL_TRUE, 0, vectBuffSize, vel.data());
+    }
 
+    unsigned int num = pos.size();
     for (unsigned int i = 0; i < num; i++ )
-        addParticle(mass.at(i), pos.at(i), vel.at(i));
+        addParticle(pos.at(i), vel.at(i));
 
-    // Update energy values
+    // Update buffers
     initializeCLBuffers();
     setupCLKernelsArgs();
 
-    cl::Event event;
-    updateEn(event);
+    // Update accelerations
+    updateAcc(event);
     event.wait();
+
+    // Update initial energy
+    enIn = getEnTot();
 }
 
 void NBSystem::removeParticle(unsigned int i)
 {
     if (i >= pnum) throw std::domain_error("No particle with given id.");
+
+    if (timeCur != 0) {
+        queue.enqueueReadBuffer(d_pos[curBuffIndex],
+                                CL_TRUE, 0, vectBuffSize, pos.data());
+        queue.enqueueReadBuffer(d_vel,
+                                CL_TRUE, 0, vectBuffSize, vel.data());
+    }
+
     pos.erase(pos.begin() + i);
     vel.erase(vel.begin() + i);
     pnum--;
 
-    // Update energy values
+    // Update buffers
     initializeCLBuffers();
     setupCLKernelsArgs();
 
-    cl::Event event;
-    updateEn(event);
+    // Update accelerations
+    updateAcc(event);
     event.wait();
+
+    // Update initial energy
+    enIn = getEnTot();
 }
 
 void NBSystem::addParticle(std::string fileName)
@@ -131,9 +143,6 @@ void NBSystem::addParticle(std::string fileName)
         // Skipping lines with system's energy data
         std::getline(file, line);
 
-        // Warnings with
-        // std::vector<cl_float> m;
-        std::vector<float> mass;
         std::vector<cl_float4> pos;
         std::vector<cl_float4> vel;
 
@@ -152,7 +161,7 @@ void NBSystem::addParticle(std::string fileName)
                 sLine >> word;
                 p.s[i] = std::stof(word);
             }
-            pos.emplace_back(p);
+
 
             cl_float4 v;
             for (int i = 0; i < 3; i++) {
@@ -162,11 +171,11 @@ void NBSystem::addParticle(std::string fileName)
             vel.emplace_back(v);
 
             sLine >> word;
-            cl_float m = std::stof(word);
-            mass.emplace_back(m);
 
+            p.s3 = std::stof(word);
+            pos.emplace_back(p);
         }
-        addParticle(mass, pos, vel);
+        addParticle(pos, vel);
         file.close();
     } else throw std::runtime_error("Can't find particles data file.");
 
@@ -216,6 +225,10 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
         unsigned int l[] = {0, i, i + 1};
         for (unsigned int k : l) tri.emplace_back(vertices.at(k));
     }
+
+    vnum = tri.size();
+    initializeCLBuffers();
+    setupCLKernelsArgs();
 }
 
 void NBSystem::addBoundary(std::string fileName)
@@ -325,13 +338,15 @@ std::string NBSystem::energyString()
 
 std::string NBSystem::stateString()
 {
+    syncArrays();
+
     std::string cSymb = "#";
     std::streamsize defaultPrecision = std::cout.precision();
 
     std::ostringstream out;
 
     out << cSymb << "Time = " << timeCur; // Time
-    out << "\t Time step = " << timeStep << std::endl;
+    out << "\t Time step = " << dt << std::endl;
     out << cSymb << energyString() << std::endl; // Energy
     // All particles state
     for (int i = 0; i < pnum; ++i) {
@@ -371,129 +386,6 @@ std::string NBSystem::boundariesString()
     std::cout << std::setprecision(defaultPrecision);
 
     return out.str().erase(out.str().size()-1);
-}
-
-void NBSystem::readSettings(std::string fileName)
-{
-    libconfig::Config cfg;
-
-    // Read the file. If there is an error, report it and exit.
-    try {
-        cfg.readFile(fileName.data());
-    }
-    catch(const libconfig::FileIOException &fioex) {
-        std::cerr << "I/O error while reading file." << std::endl;
-        throw;
-    }
-    catch(const libconfig::ParseException &pex) {
-        std::cerr << "Parse error at " << pex.getFile() << ":" << pex.getLine()
-                  << " - " << pex.getError() << std::endl;
-        throw;
-    }
-    try{
-        try {
-            timeStepMax = cfg.lookup("Max_time_step");
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Max_time_step' setting in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            timeEnd = cfg.lookup("End_time");
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'End_time' setting in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            std::string outFileNameStr = cfg.lookup("Write_to_file");
-            outFileName = outFileNameStr;
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Write_to_file' setting in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            addParticle(cfg.lookup("Particles_data_file"));
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Particles_data_file' setting"
-                         " in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            outPrec = cfg.lookup("Write_precision");
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Write_precision' setting in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            timeWrite =  cfg.lookup("Write_interval");
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Write_interval' setting in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            addBoundary(cfg.lookup("Boundaries_data_file"));
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Write_interval' setting in configuration file."
-                      << std::endl;
-            throw;
-        }
-
-        try {
-            int random_particles = cfg.lookup("Random_particles_number");
-            for (int i = 0; i < random_particles; i++){
-                //
-            }
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-
-        }
-
-        try {
-            std::string type = cfg.lookup("OpenCL_device_type");
-            deviceType = type.compare("gpu")?
-                                CL_DEVICE_TYPE_CPU:CL_DEVICE_TYPE_GPU;
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'OpenCL_device_type' setting. Using CPU."
-                      << std::endl;
-            deviceType = CL_DEVICE_TYPE_CPU;
-        }
-
-        try {
-            platformId = cfg.lookup("OpenCL_platform_id");
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'OpenCL_platform_id' setting."
-                         " Using first available."
-                      << std::endl;
-            platformId = -1;
-        }
-
-
-    }
-    catch (const libconfig::SettingTypeException &stex) {
-        std::cout << "Something wrong in the settings file with '"
-                  << stex.getPath() << "'." << std::endl;
-        throw;
-    }
 }
 
 void NBSystem::setupCL(int platformId, cl_device_type deviceType)
@@ -605,41 +497,50 @@ void NBSystem::setupCL(int platformId, cl_device_type deviceType)
         calcEnKin = cl::Kernel(program, "calcEkinCL");
         calcEnPot = cl::Kernel(program, "calcEpotLJCL");
 
+        // Create event
+        event = cl::Event();
+
     } catch (cl::Error error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
         throw;
     }
-
+    initializeCLBuffers();
+    setupCLKernelsArgs();
 }
 
 void NBSystem::initializeCLBuffers()
 {
     // Create and initialize device buffers
-    cl::Event event;
+    //cl::Event event;
     try {
         if (pnum) {
-            size_t bufSize = pnum * sizeof(cl_float4);
-            d_pos = cl::Buffer(context, CL_MEM_READ_WRITE, bufSize);
-            d_vel = cl::Buffer(context, CL_MEM_READ_WRITE, bufSize);
-            d_newPos = cl::Buffer(context, CL_MEM_READ_WRITE, bufSize);
-            d_newVel = cl::Buffer(context, CL_MEM_READ_WRITE, bufSize);
-            d_acc = cl::Buffer(context, CL_MEM_READ_WRITE, bufSize);
-            d_est = cl::Buffer(context, CL_MEM_READ_WRITE,
-                               pnum * pnum * sizeof(cl_float));
+            vectBuffSize = pnum * sizeof(cl_float4);
+            scalBuffSize = pnum * sizeof(cl_float);
 
+            for (unsigned int i = 0; i < 2; i++) {
+                d_pos[i] = cl::Buffer(context, CL_MEM_READ_WRITE, vectBuffSize);
+            }
+            d_vel = cl::Buffer(context, CL_MEM_READ_WRITE, vectBuffSize);
+            d_acc = cl::Buffer(context, CL_MEM_READ_WRITE, vectBuffSize);
             d_enKin = cl::Buffer(context, CL_MEM_READ_WRITE,
-                                 pnum * sizeof(cl_float));
+                                 scalBuffSize);
             d_enPot = cl::Buffer(context, CL_MEM_READ_WRITE,
-                                 pnum * sizeof(cl_float));
+                                 scalBuffSize);
 
-            queue.enqueueWriteBuffer(d_pos, CL_TRUE,
-                                     0, bufSize, pos.data(), NULL, &event);
-            event.wait();
+            d_est_len = pnum * pnum;
+            d_est_size = d_est_len * sizeof(cl_float);
+            d_est = cl::Buffer(context, CL_MEM_READ_WRITE,
+                               d_est_size);
+
+            queue.enqueueWriteBuffer(d_pos[curBuffIndex], CL_TRUE,
+                                     0, vectBuffSize, pos.data(), NULL, &event);
             queue.enqueueWriteBuffer(d_vel, CL_TRUE,
-                                     0, bufSize, vel.data(), NULL, &event);
+                                     0, vectBuffSize, vel.data(), NULL, &event);
             event.wait();
+            // Particles state at device and host are the same now
+            syncFlag = true;
 
             // Create ancillary arrays
             delete[] h_enKin;
@@ -653,16 +554,18 @@ void NBSystem::initializeCLBuffers()
 
         int vnum = tri.size(); // Number of vertices
         if (vnum) {
+            size_t triBufSize = vnum * sizeof(cl_float4);
             d_tri = cl::Buffer(context, CL_MEM_READ_WRITE,
-                               vnum * sizeof(cl_float4));
+                               triBufSize);
 
             queue.enqueueWriteBuffer(d_tri, CL_TRUE,
-                                     0, vnum * sizeof(cl_float4),
+                                     0, triBufSize,
                                      tri.data(), NULL, &event);
             event.wait();
         }
     }  catch (cl::Error error) {
-        std::cerr << "Caught exception: " << error.what()
+        std::cerr << "Caught exception at initializeCLBuffers(): "
+                  << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
         throw;
@@ -671,39 +574,40 @@ void NBSystem::initializeCLBuffers()
 
 void NBSystem::setupCLKernelsArgs()
 {
-    int vnum = tri.size(); // Number of vertices
+    // Commented calls of setArgs are executed before kernels runs
+    //int vnum = tri.size(); // Number of vertices
     try{
         // Set stepInTime kernel arguments
-        stepInTime.setArg(0, d_pos);
+//      stepInTime.setArg(0, d_pos);
         stepInTime.setArg(1, d_vel);
         stepInTime.setArg(2, d_acc);
-        stepInTime.setArg(3, (cl_float) timeStep);
-        stepInTime.setArg(4, d_newPos);
+//      stepInTime.setArg(3, (cl_float) dt);
+//      stepInTime.setArg(4, d_newPos);
 
         // Set estimateDt kernel arguments
-        estimateDt.setArg(0, d_pos);
+//      estimateDt.setArg(0, d_pos);
         estimateDt.setArg(1, d_vel);
         estimateDt.setArg(2, d_acc);
         estimateDt.setArg(3, d_est);
 
         // Set calcAcc kernel arguments
-        calcAcc.setArg(0, d_pos);
+//      calcAcc.setArg(0, d_pos);
         calcAcc.setArg(1, d_acc);
 
         // Set checkBoundaries kernel arguments
-        checkBoundaries.setArg(0, d_pos);
+//      checkBoundaries.setArg(0, d_pos);
         checkBoundaries.setArg(1, d_vel);
-        checkBoundaries.setArg(2, d_newPos);
+//      checkBoundaries.setArg(2, d_newPos);
         checkBoundaries.setArg(3, d_tri);
         checkBoundaries.setArg(4, vnum);
 
         // Set calcEnKin kernel arguments
-        calcEnKin.setArg(0, d_pos);
+//      calcEnKin.setArg(0, d_pos);
         calcEnKin.setArg(1, d_vel);
         calcEnKin.setArg(2, d_enKin);
 
         // Set calcEnPot kernel arguments
-        calcEnPot.setArg(0, d_pos);
+//      calcEnPot.setArg(0, d_pos);
         calcEnPot.setArg(1, d_enPot);
     } catch (cl::Error error) {
         std::cerr << "Caught exception: " << error.what()
@@ -713,58 +617,217 @@ void NBSystem::setupCLKernelsArgs()
     }
 }
 
-void NBSystem::updateEn(cl::Event &event)
+double NBSystem::getEnKin(cl::Event &event)
 {
-    // Calculate energy of the system
+    // Calculate kinetic energy of the system
     try {
+        calcEnKin.setArg(0, d_pos[curBuffIndex]);
         queue.enqueueNDRangeKernel(calcEnKin,
                                    cl::NullRange, cl::NDRange(pnum),
                                    cl::NullRange, NULL, &event);
         event.wait();
-        queue.enqueueNDRangeKernel(calcEnPot,
-                                   cl::NullRange, cl::NDRange(pnum),
-                                   cl::NullRange, NULL, &event);
-        event.wait();
+
         queue.enqueueReadBuffer(d_enKin, CL_TRUE, 0,
-                                pnum *  sizeof(cl_float), h_enKin);
-        queue.enqueueReadBuffer(d_enPot, CL_TRUE, 0,
-                                pnum *  sizeof(cl_float), h_enPot);
-        enPot = 0;
-        enKin = 0;
-        for (size_t i = 0; i < pnum; ++i) {
-            enKin += h_enKin[i];
-        }
-        enPot /= 2;
-        for (size_t i = 0; i < pnum; ++i) {
-            enPot += h_enPot[i];
-        }
-
-
-    } catch (cl::Error error) {
-        std::cerr << "Caught exception: " << error.what()
-                  << '(' << error.err() << ')'
-                  << std::endl;
-    throw;
-    }
-}
-
-double NBSystem::estimateTimeStep(cl::Event event)
-{
-    // Estimate time step for the next iteration
-    try {
-        int len = pnum * pnum;
-        queue.enqueueNDRangeKernel(estimateDt,
-                                   cl::NullRange, cl::NDRange(pnum, pnum),
-                                   cl::NullRange, NULL, &event);
-        event.wait();
-        queue.enqueueReadBuffer(d_est, CL_TRUE, 0,
-                                len * sizeof(cl_float), h_esTS);
-        double dt = dtCoef * (*std::min_element(h_esTS, h_esTS + len));
-        return dt;
+                                scalBuffSize, h_enKin);
     } catch (cl::Error error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
         throw;
     }
+
+    double enKin = 0.0;
+    for (size_t i = 0; i < pnum; ++i) {
+        enKin += h_enKin[i];
+    }
+
+    return enKin;
+}
+
+double NBSystem::getEnPot(cl::Event &event)
+{
+    // Calculate potential energy of the system
+    try {
+        calcEnPot.setArg(0, d_pos[curBuffIndex]);
+        queue.enqueueNDRangeKernel(calcEnPot,
+                                   cl::NullRange, cl::NDRange(pnum),
+                                   cl::NullRange, NULL, &event);
+        event.wait();
+        queue.enqueueReadBuffer(d_enPot, CL_TRUE, 0,
+                                scalBuffSize, h_enPot);
+    } catch (cl::Error error) {
+        std::cerr << "Caught exception: " << error.what()
+                  << '(' << error.err() << ')'
+                  << std::endl;
+    throw;
+    }
+
+    double enPot = 0.0;
+    for (size_t i = 0; i < pnum; ++i) {
+        enPot += h_enPot[i];
+    }
+    enPot /= 2;
+
+    return enPot;
+}
+
+double NBSystem::estDt(cl::Event &event)
+{
+    // Estimate time step for the next iteration
+    try {
+        estimateDt.setArg(0, d_pos[curBuffIndex]);
+
+        queue.enqueueNDRangeKernel(estimateDt,
+                                   cl::NullRange, cl::NDRange(pnum, pnum),
+                                   cl::NullRange, NULL, &event);
+        event.wait();
+
+        queue.enqueueReadBuffer(d_est, CL_TRUE, 0,
+                                d_est_size, h_esTS);
+
+    } catch (cl::Error error) {
+        std::cerr << "Caught exception: " << error.what()
+                  << '(' << error.err() << ')'
+                  << std::endl;
+        throw;
+    }
+
+    return dtCoef * (*std::min_element(h_esTS, h_esTS + d_est_len));
+}
+
+void NBSystem::updateAcc(cl::Event &event)
+{
+    // Udpate accelerations for current state
+    try {
+        calcAcc.setArg(0, d_pos[curBuffIndex]);
+        queue.enqueueNDRangeKernel(calcAcc,
+                               cl::NullRange, cl::NDRange(pnum),
+                               cl::NullRange, NULL, &event);
+    }  catch (cl::Error error) {
+        std::cerr << "Caught exception: " << error.what()
+                  << '(' << error.err() << ')'
+                  << std::endl;
+        throw;
+    }
+}
+
+void NBSystem::updatePos(double dt, cl::Event &event)
+{
+    int currentIndex = curBuffIndex;
+    int nextIndex = (curBuffIndex+1)%2;
+
+    try {
+        stepInTime.setArg(0, d_pos[currentIndex]);
+        stepInTime.setArg(3, (cl_float) dt);
+        stepInTime.setArg(4, d_pos[nextIndex]);
+
+        queue.enqueueNDRangeKernel(stepInTime,
+                                   cl::NullRange, cl::NDRange(pnum),
+                                   cl::NullRange, NULL, &event);
+        event.wait();
+
+        // Check and resolve crossing of a boundaries
+        checkBoundaries.setArg(0, d_pos[currentIndex]);
+        checkBoundaries.setArg(2, d_pos[nextIndex]);
+
+        queue.enqueueNDRangeKernel(checkBoundaries,
+                                   cl::NullRange, cl::NDRange(pnum),
+                                   cl::NullRange, NULL, &event);
+        event.wait();
+
+    }  catch (cl::Error error) {
+        std::cerr << "Caught exception at updatePos(): " << error.what()
+                  << '(' << error.err() << ')'
+                  << std::endl;
+        throw;
+    }
+    curBuffIndex = nextIndex;
+    // Particles state at device and host are not the same now
+    syncFlag = false;
+}
+
+void NBSystem::setDtCoef(double coeff)
+{
+    if (coeff <=0)
+        throw std::invalid_argument("Invalid argument to setDtCoef()");
+    dtCoef = coeff;
+}
+
+double NBSystem::getEstDt()
+{
+    return estDt(event);
+}
+
+
+void NBSystem::evolve(double timeStep)
+{
+    if (timeStep <=0)
+        throw std::invalid_argument("Invalid argument to evolve()");
+    updatePos(timeStep, event);
+    dt = timeStep;
+    timeCur += timeStep;
+    tsNum++;
+    updateAcc(event);
+}
+
+void NBSystem::evolveIn(double interval)
+{
+    double time = 0;
+    double eps = std::numeric_limits<double>::epsilon() * interval;
+
+    do {
+        dt = estDt(event);
+        if ((time + dt) > interval) dt = interval - time;
+        evolve(dt);
+        time += dt;
+    } while (std::fabs(interval - time) > eps);
+    std::cout << tsNum << std::endl;
+}
+
+cl_float4 NBSystem::getVel(unsigned int i)
+{
+    syncArrays();
+    return vel.at(i);
+}
+
+cl_float4 NBSystem::getPos(unsigned int i)
+{
+    syncArrays();
+    return pos.at(i);
+}
+
+double NBSystem::getTimeCur()
+{
+    return timeCur;
+}
+
+double NBSystem::getTSNum()
+{
+    return tsNum;
+}
+
+void NBSystem::syncArrays()
+{
+    // Copy data from device to host
+    if (!syncFlag) {
+        try {
+            queue.enqueueReadBuffer(d_pos[curBuffIndex],
+                                    CL_TRUE, 0, vectBuffSize, pos.data());
+            queue.enqueueReadBuffer(d_vel,
+                                    CL_TRUE, 0, vectBuffSize, vel.data());
+
+        } catch (cl::Error error) {
+            std::cerr << "Caught exception at syncArrays(): " << error.what()
+                      << '(' << error.err() << ')'
+                      << std::endl;
+            throw;
+        }
+        // Particles state at device and host are the same now
+        syncFlag = true;
+    }
+}
+
+void NBSystem::setOutPrec(unsigned int precision)
+{
+    outPrec = precision;
 }
