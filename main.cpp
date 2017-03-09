@@ -15,6 +15,8 @@ public:
     int platformId;
     cl_device_type deviceType;
     double dtCoef;
+    double ljEps;
+    double ljRmin;
     int outPrec;
     double writeInterval;
     double timeStepMax;
@@ -28,6 +30,8 @@ Settings::Settings(std::string fileName)
     platformId = -1;
     deviceType = CL_DEVICE_TYPE_CPU;
     dtCoef = 0.01;
+    ljEps = 1;
+    ljRmin = 1;
     outPrec = 6;
     writeInterval = std::numeric_limits<double>::max();
     timeStepMax = std::numeric_limits<double>::max();
@@ -110,6 +114,24 @@ Settings::Settings(std::string fileName)
                       << std::endl;
         }
 
+//        try {
+//            ljEps = cfg.lookup("Lennard-Jones_epsilon");
+//        }
+//        catch(const libconfig::SettingNotFoundException &nfex) {
+//            std::cerr << "No 'Lennard-Jones_epsilon' setting"
+//                         " in configuration file."
+//                      << std::endl;
+//        }
+
+//        try {
+//            ljRmin = cfg.lookup("Lennard-Jones_rmin");
+//        }
+//        catch(const libconfig::SettingNotFoundException &nfex) {
+//            std::cerr << "No 'Lennard-Jones_rmin' setting"
+//                         " in configuration file."
+//                      << std::endl;
+//        }
+
         try {
             outPrec = cfg.lookup("Write_precision");
         }
@@ -172,45 +194,237 @@ Settings::Settings(std::string fileName)
     }
 }
 
-void stateToFile(std::ofstream& outFileStream, NBSystem& nbs)
+std::string energyString(double enKin,
+                         double enPot,
+                         double enInit,
+                         unsigned int prec)
+{
+    std::ostringstream out;
+    out << std::scientific;
+    out << std::setprecision(prec);
+
+    std::string delim = " ";
+
+    double enTot = enKin + enPot;
+    out << "E_kin=";
+    out << enKin;
+    out << delim << "E_pot=";
+    out << enPot;
+    out << delim << "E_tot=";
+    out << enTot;
+    out << delim;
+    if (enInit) {
+        out << "(E_tot-E_init)/E_init=";
+        out << (enTot - enInit)/enInit;
+    } else {
+        out << "E_init=0\t(E_tot-E_init)=";
+        out << enTot - enInit;
+    }
+
+    return out.str();
+}
+
+std::string particleStateString(NBSystem &nbsystem,
+                                const unsigned int& pId,
+                                const unsigned int& prec)
+{
+    int cWidth = 8; // Minimum column width is 8
+    std::string delim = " "; // data delimeter
+
+    cWidth += prec;
+
+    std::ostringstream out;
+
+    out << std::scientific;
+    out << std::setprecision(prec);
+    std::cout << std::right;
+
+    out << pId;
+    for (unsigned int i = 0; i < 3; i++) {
+        out << delim;
+        out << std::setw(cWidth) << nbsystem.posData()->at(pId).s[i];
+    }
+    for (unsigned int i = 0; i < 3; i++) {
+        out << delim;
+        out << std::setw(cWidth) << nbsystem.posData()->at(pId).s[i];
+    }
+    out << delim;
+    out << nbsystem.posData()->at(pId).s[3];
+
+    return out.str();
+}
+
+std::string systemStateString(NBSystem &nbsystem,
+                        const double& time,
+                        const double& timeStep,
+                        const double& enKin,
+                        const double& enPot,
+                        const double& enInit,
+                        const unsigned int& prec)
+{
+    std::ostringstream outStr;
+
+    std::string cSymb = "#";
+
+    outStr << cSymb << "Time = " << time; // Time
+    outStr << "\t Time step = " << timeStep << std::endl;
+    outStr << cSymb;
+    outStr << energyString(enKin, enPot, enInit, prec) << std::endl;
+    // All particles state
+    unsigned int pnum = nbsystem.getPNum();
+    for (int i = 0; i < pnum; ++i) {
+        outStr << particleStateString(nbsystem, i, prec);
+        outStr << std::endl;
+    }
+
+    return outStr.str().erase(outStr.str().size()-1);
+}
+
+void stateToFile(std::ofstream& outFileStream,
+                 NBSystem& nbs,
+                 const double& time,
+                 const double& timeStep,
+                 const double& enKin,
+                 const double& enPot,
+                 const double& enInit,
+                 const unsigned int& prec
+                 )
 {
     if (outFileStream.is_open()){
-        outFileStream << nbs.stateString();
-//        std::string commentSymb = "#";
-//        osFile << commentSymb << "Time = " << time; // Time
-//        osFile << "\t Time step = " << timeStep << std::endl;
-//        osFile << commentSymb << nbs.energyString() << std::endl; // Energy
-//        // All particles state
-//        unsigned int pnum = nbs.getPNum();
-//        for (int i = 0; i < pnum; ++i) {
-//            out << nbs.stateString(i);
-//            out << std::endl;
-//        }
+        outFileStream << systemStateString(nbs,
+                                           time,
+                                           timeStep,
+                                           enKin,
+                                           enPot,
+                                           enInit,
+                                           prec);
         outFileStream << std::endl << std::endl; // End of the data block
     } else {
         throw std::runtime_error("Error at stateToFile()."
                                       " File is not opened.");
     }
-
 }
+
+void addParticle(const std::string& fileName, NBSystem& nbsystem)
+{
+    std::ifstream file;
+    file.open(fileName);
+
+    if (file.is_open()) {
+        std::istream::pos_type blockPos = file.end;
+        std::string blockMark = "#Time";
+        std::stringstream sLine;
+        std::string line;
+        std::string word;
+
+        while (std::getline(file, line)) {
+            sLine = std::stringstream(line);
+            sLine >> word;
+            if (word == blockMark) blockPos = file.tellg();
+        }
+
+        if (blockPos == file.end)
+            throw std::runtime_error("Can't find data "
+                                     "block in particles file.");
+
+        file.clear();
+        // Setting position to the beginning of last time block
+        file.seekg(blockPos);
+        // Skipping lines with system's energy data
+        std::getline(file, line);
+
+        std::vector<cl_float4> pos;
+        std::vector<cl_float4> vel;
+
+        // Read positions and velocities until the end of file
+        while (std::getline(file, line)) {
+            if (line == "") break;
+            sLine = std::stringstream(line);
+
+            // Skip id of particle
+            sLine >> word;
+
+            cl_float4 p;
+            for (int i = 0; i < 3; i++) {
+                sLine >> word;
+                p.s[i] = std::stof(word);
+            }
+
+            cl_float4 v;
+            for (int i = 0; i < 3; i++) {
+                sLine >> word;
+                v.s[i] = std::stof(word);
+            }
+            vel.emplace_back(v);
+
+            sLine >> word;
+            p.s3 = std::stof(word);
+            pos.emplace_back(p);
+        }
+
+        nbsystem.addParticle(pos, vel);
+        file.close();
+    } else throw std::runtime_error("Can't find particles data file.");
+}
+
+void addBoundary(const std::string& fileName, NBSystem& nbsystem)
+{
+    // This string should preceed the sequence of boundary points
+    std::string blockMark = "#Boundary";
+
+    std::ifstream file;
+    file.open(fileName);
+    if (file.is_open()){
+        std::stringstream sLine;
+        std::string line;
+        std::string word;
+
+        while (std::getline(file, line)) {
+            sLine = std::stringstream(line);
+            sLine >> word;
+            if (word == blockMark) {
+                std::vector<cl_float4> boundary;
+                while (std::getline(file, line)){
+                    if (line != "") {
+                        cl_float4 vertice;
+                        vertice.s3 = 0.0f;
+                        sLine = std::stringstream(line);
+                        sLine >> word;
+                        vertice.s0 = std::stod(word);
+                        sLine >> word;
+                        vertice.s1 = std::stod(word);
+                        sLine >> word;
+                        vertice.s2 = std::stod(word);
+                        boundary.emplace_back(vertice);
+                    } else break;
+                }
+
+                nbsystem.addBoundary(boundary);
+            }
+        }
+        file.close();
+    } else {
+        throw std::runtime_error("Can't find boundaries data file.");
+    }
+}
+
+
 
 int main(int argc, char *argv[])
 {
     if( argc < 1) {
-      std::cerr
-        << "Use: nbsystem <settings file>"
-        << std::endl;
+      std::cerr << "Use: nbsystem <settings file>" << std::endl;
       exit(EXIT_FAILURE);
     }
 
     Settings set(argv[1]);
     NBSystem nbs;
 
-    nbs.setupCL(set.platformId, set.deviceType);
-    nbs.addParticle(set.particleFileName);
-    nbs.addBoundary(set.boundariesFileName);
+    std::cout << nbs.setupCL(set.platformId, set.deviceType) << std::endl;
+    addParticle(set.particleFileName, nbs);
+    addBoundary(set.boundariesFileName, nbs);
     nbs.setDtCoef(set.dtCoef);
-    nbs.setOutPrec(set.outPrec);
+    //nbs.setLJparameters(set.ljEps, set.ljRmin);
 
     double time = 0.0;
     double timeStep = set.timeStepMax;
@@ -219,12 +433,22 @@ int main(int argc, char *argv[])
     double writeTime = 0.0; // Write time counter
     double eps = std::numeric_limits<double>::epsilon() * timeStep;
     unsigned int nSteps;
-    double eInit = nbs.getEnIn();
-    double eCurrent = nbs.getEnTot();
+    double enKin = nbs.getEnKin();
+    double enPot = nbs.getEnPot();
+    double enTot = enKin + enPot;
+    double enInit = enTot;
+    unsigned int prec = set.outPrec;
     std::ofstream outFileStream;
     // Output, append
     outFileStream.open(set.outFileName, std::ofstream::out | std::ofstream::app);
-    stateToFile(outFileStream, nbs);
+
+    stateToFile(outFileStream, nbs, time, timeStep,
+                enKin, enPot, enInit, prec);
+
+    // Console output settings
+    std::cout << std::scientific;
+    std::cout << std::setprecision(prec);
+    std::cout << std::right;
 
     do {
         timeStep = nbs.getEstDt();
@@ -232,10 +456,9 @@ int main(int argc, char *argv[])
         // Check timeStep to not overshoot write time
         if ((writeTime + timeStep) > writeInterval)
             timeStep = writeInterval - writeTime;
-        // Check dt to not overshoot end time
+        // Check timeStep to not overshoot end time
         if ((time + timeStep) > set.timeEnd)
             timeStep = timeEnd - time;
-
 
         // Move particles
         nbs.evolve(timeStep);
@@ -250,23 +473,24 @@ int main(int argc, char *argv[])
         writeTime += timeStep;
         if (std::fabs(writeInterval - writeTime) < eps
                 || std::fabs(time - timeEnd) < eps) {
-            stateToFile(outFileStream, nbs);
+            //stateToFile(outFileStream, nbs);
+            enKin = nbs.getEnKin();
+            enPot = nbs.getEnPot();
+            enTot = enKin + enPot;
+            stateToFile(outFileStream, nbs, time, timeStep,
+                        enKin, enPot, enInit, prec);
             writeTime = 0;
 
-            // Print current progress
-            std::cout << std::scientific;
-            std::cout << std::setprecision(6);
-            std::cout << std::right;
+            // Print current progress to console
             std::cout << "Time: " << time << "  "
                       << "Time Step: " << timeStep
-                      << "\t";
-
-            if (eInit) {
+                      << "  ";
+            if (enInit) {
                 std::cout << "(E_tot-E_init)/E_init=";
-                std::cout << (nbs.getEnTot() - nbs.getEnIn())/nbs.getEnIn();
+                std::cout << (enTot - enInit)/enInit;
             } else {
                 std::cout << "E_init=0\t(E_tot-E_init)=";
-                std::cout << (nbs.getEnTot() - nbs.getEnIn());
+                std::cout << (enTot - enInit);
             }
             std::cout << std::endl;
         }

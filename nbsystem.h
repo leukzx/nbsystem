@@ -3,6 +3,7 @@
 
 #define __CL_ENABLE_EXCEPTIONS
 
+
 #include <string>
 #include <iostream>
 #include <fstream>
@@ -11,6 +12,9 @@
 #include <algorithm>
 #include <cmath> // std::fabs()
 #include <CL/cl.hpp>
+#include <CL/cl_platform.h>
+#include "boundingbox.h"
+
 
 
 class NBSystem
@@ -23,34 +27,21 @@ private:
     // Particle velocities
     std::vector<cl_float4> vel;
 
-    unsigned int vnum;
     // Vertices of boundaries triangles. Three consecutive elements make triangle.
     std::vector<cl_float4> tri;
+    // Number of vertices
+    unsigned int vnum;
 
-    // Intitial total energy
-    double enIn;
-    // Kinetic energy
-    double enKin;
-    // Potential energy
-    double enPot;
-    // Current time
-    double timeCur;
-    // End time
-    double timeEnd;
-    // Time step
-    double dt;
-    // Number of time steps
-    unsigned int tsNum;
+    // Minimal bounding box
+    BoundingBox<double, 3> box;
+
     // Time step etimation coefficient. Used in updateDt.
     double dtCoef;
 
-
-    // Output precision
-    unsigned int outPrec;
-    // Output file name
-    std::string outFileName;
-    // Write time interval
-    double timeWrite;
+//    // The depth of the potential well
+//    double ljEps;
+//    // The distance at which the potential reaches its minimum
+//    double ljRmin;
 
     void addParticle(cl_float4 &p, cl_float4 &v);
 
@@ -93,12 +84,9 @@ private:
     // This flag is set then pos and vel are the same as d_pos and d_vel
     bool syncFlag;
 
-
-
     void initializeCLBuffers();
     void setupCLKernelsArgs();
 
-    void updateEn(cl::Event &event);
     double getEnKin(cl::Event &event);
     double getEnPot(cl::Event &event);
     void updateAcc(cl::Event &event);
@@ -106,45 +94,38 @@ private:
     void updatePos(double dt, cl::Event &event);
     void syncArrays();
 
-
 public:
     NBSystem();
     ~NBSystem();
 
-    void setupCL(int platformId, cl_device_type deviceType);
+    std::string setupCL(int platformId, cl_device_type deviceType);
 
-    double getEnIn();
     double getEnTot();
     double getEnPot();
     double getEnKin();
     double getEstDt();
-    double getTimeCur();
-    double getTSNum();
-    unsigned int getPNum();
-    cl_float4 getPos(unsigned int i);
-    cl_float4 getVel(unsigned int i);
+    unsigned int getPNum() const;
+    double getLJeps() const;
+    double getLJrmin() const;
 
-    //std::vector<cl_float4> data();
+    const std::vector<cl_float4>* posData();
+    const std::vector<cl_float4>* velData();
+    const std::vector<cl_float4>* bndData();
 
     void setDtCoef(double coeff);
-    void setOutPrec(unsigned int precision);
+//    void setLJparameters(double eps, double rmin);
+
 
     void addParticle(std::vector<cl_float4> &pos,
                      std::vector<cl_float4> &vel);
-    void addParticle(std::string fileName);
     void removeParticle(unsigned int i);
 
     void addBoundary(std::vector<cl_float4> &vertices);
-    void addBoundary(std::string fileName);
 
     void evolve(double timeStep);
     void evolveIn(double interval);
 
-    std::string energyString();
-    std::string stateString(int pId);
-    std::string stateString();
-    std::string boundariesString();
-    std::string toString();
+    std::string boundariesString(unsigned int prec);
 };
 
 #endif // NBSYSTEM_H

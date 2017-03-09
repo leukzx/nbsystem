@@ -4,15 +4,9 @@ NBSystem::NBSystem()
 {
     pnum = 0;
     vnum = 0;
-    enIn = 0;
-    enKin = 0;
-    enPot = 0;
-    timeCur = 0;
-    timeEnd = 0;
-    dt = 0;
-    tsNum = 0;
-    outPrec = 6;
     dtCoef = 0.01;
+//    ljRmin = 1;
+//    ljEps = 1;
     syncFlag = false;
 
     curBuffIndex = 0;
@@ -30,11 +24,6 @@ NBSystem::~NBSystem()
     delete[] h_enKin;
     delete[] h_enPot;
     delete[] h_esTS;
-}
-
-double NBSystem::getEnIn()
-{
-    return enIn;
 }
 
 double NBSystem::getEnPot()
@@ -65,12 +54,6 @@ void NBSystem::addParticle(std::vector<cl_float4> &pos,
     if (pos.size() != vel.size())
         throw std::runtime_error("Sizes of particle state vectors"
                                  " (mass, pos, vel) are not equal.");
-    if (timeCur != 0) {
-        queue.enqueueReadBuffer(d_pos[curBuffIndex],
-                                CL_TRUE, 0, vectBuffSize, pos.data());
-        queue.enqueueReadBuffer(d_vel,
-                                CL_TRUE, 0, vectBuffSize, vel.data());
-    }
 
     unsigned int num = pos.size();
     for (unsigned int i = 0; i < num; i++ )
@@ -84,20 +67,13 @@ void NBSystem::addParticle(std::vector<cl_float4> &pos,
     updateAcc(event);
     event.wait();
 
-    // Update initial energy
-    enIn = getEnTot();
+//    // Update initial energy
+//    enIn = getEnTot();
 }
 
 void NBSystem::removeParticle(unsigned int i)
 {
     if (i >= pnum) throw std::domain_error("No particle with given id.");
-
-    if (timeCur != 0) {
-        queue.enqueueReadBuffer(d_pos[curBuffIndex],
-                                CL_TRUE, 0, vectBuffSize, pos.data());
-        queue.enqueueReadBuffer(d_vel,
-                                CL_TRUE, 0, vectBuffSize, vel.data());
-    }
 
     pos.erase(pos.begin() + i);
     vel.erase(vel.begin() + i);
@@ -110,75 +86,6 @@ void NBSystem::removeParticle(unsigned int i)
     // Update accelerations
     updateAcc(event);
     event.wait();
-
-    // Update initial energy
-    enIn = getEnTot();
-}
-
-void NBSystem::addParticle(std::string fileName)
-{
-    std::ifstream file;
-
-    file.open(fileName);
-    if (file.is_open()){
-        std::istream::pos_type blockPos = file.end;
-        std::string blockMark = "#Time";
-        std::stringstream sLine;
-        std::string line;
-        std::string word;
-
-        while (std::getline(file, line)) {
-            sLine = std::stringstream(line);
-            sLine >> word;
-
-            if (word == blockMark) blockPos = file.tellg();
-        }
-        if (blockPos == file.end)
-            throw std::runtime_error("Can't find data "
-                                     "block in particles file.");
-
-        file.clear();
-        // Setting position to the beginning of last time block
-        file.seekg(blockPos);
-        // Skipping lines with system's energy data
-        std::getline(file, line);
-
-        std::vector<cl_float4> pos;
-        std::vector<cl_float4> vel;
-
-        // Read positions and velocities until the end of file
-        while (std::getline(file, line)) {
-            if (line == "") break;
-
-
-
-            sLine = std::stringstream(line);
-            // Skip id of particle
-            sLine >> word;
-
-            cl_float4 p;
-            for (int i = 0; i < 3; i++) {
-                sLine >> word;
-                p.s[i] = std::stof(word);
-            }
-
-
-            cl_float4 v;
-            for (int i = 0; i < 3; i++) {
-                sLine >> word;
-                v.s[i] = std::stof(word);
-            }
-            vel.emplace_back(v);
-
-            sLine >> word;
-
-            p.s3 = std::stof(word);
-            pos.emplace_back(p);
-        }
-        addParticle(pos, vel);
-        file.close();
-    } else throw std::runtime_error("Can't find particles data file.");
-
 }
 
 void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
@@ -227,149 +134,23 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
     }
 
     vnum = tri.size();
+
+    box.setOuterBoundingBox(tri);
+
     initializeCLBuffers();
     setupCLKernelsArgs();
 }
 
-void NBSystem::addBoundary(std::string fileName)
+std::string NBSystem::boundariesString(unsigned int prec)
 {
-    // This string should preceed the sequence of boundary points
-    std::string blockMark = "#Boundary";
-
-    std::ifstream file;
-    file.open(fileName);
-    if (file.is_open()){
-        std::stringstream sLine;
-        std::string line;
-        std::string word;
-
-
-        while (std::getline(file, line)) {
-            sLine = std::stringstream(line);
-            sLine >> word;
-            if (word == blockMark) {
-                std::vector<cl_float4> boundary;
-                while (std::getline(file, line)){
-                    if (line != "") {
-                        cl_float4 vertice;
-                        vertice.s3 = 0.0f;
-                        sLine = std::stringstream(line);
-                        sLine >> word;
-                        vertice.s0 = std::stod(word);
-                        sLine >> word;
-                        vertice.s1 = std::stod(word);
-                        sLine >> word;
-                        vertice.s2 = std::stod(word);
-                        boundary.emplace_back(vertice);
-                    } else break;
-                }
-                addBoundary(boundary);
-            }
-        }
-        file.close();
-    } else {
-        throw std::runtime_error("Can't find boundaries data file.");
-    }
-}
-
-std::string NBSystem::stateString(int pId)
-{
-    std::streamsize defaultPrecision = std::cout.precision();
-    int cWidth = 8; // Minimum column width is 8
-    std::string delim = " "; // data delimeter
-
-    cWidth += outPrec;
-
     std::ostringstream out;
 
     out << std::scientific;
-    out << std::setprecision(outPrec);
-    std::cout << std::right;
-
-    out << pId;
-    out << delim;
-    out << std::setw(cWidth) << pos[pId].s[0];
-    out << delim;
-    out << std::setw(cWidth) << pos[pId].s[1];
-    out << delim;
-    out << std::setw(cWidth) << pos[pId].s[2];
-    out << delim;
-    out << std::setw(cWidth) << vel[pId].s[0];
-    out << delim;
-    out << std::setw(cWidth) << vel[pId].s[1];
-    out << delim;
-    out << std::setw(cWidth) << vel[pId].s[2];
-    out << delim;
-    out << pos[pId].s[3];
-
-    std::cout.unsetf(std::ios::fixed | std::ios::scientific);
-    std::cout << std::setprecision(defaultPrecision);
-    return out.str();
-}
-
-std::string NBSystem::energyString()
-{
-    std::string delim = " ";
-    std::ostringstream out;
-    std::streamsize defaultPrecision = std::cout.precision();
-    out << std::scientific;
-    out << std::setprecision(outPrec);
-
-    out << "E_kin=";
-    out << getEnKin();
-    out << delim << "E_pot=";
-    out << getEnPot();
-    out << delim << "E_tot=";
-    out << getEnTot();
-    out << delim;
-    if (enIn) {
-        out << "(E_tot-E_init)/E_init=";
-        out << (getEnTot() - getEnIn())/getEnIn();
-    } else {
-        out << "E_init=0\t(E_tot-E_init)=";
-        out << (getEnTot() - getEnIn());
-    }
-
-    std::cout.unsetf(std::ios::fixed | std::ios::scientific);
-    std::cout << std::setprecision(defaultPrecision);
-
-    return out.str();
-}
-
-std::string NBSystem::stateString()
-{
-    syncArrays();
-
-    std::string cSymb = "#";
-    std::streamsize defaultPrecision = std::cout.precision();
-
-    std::ostringstream out;
-
-    out << cSymb << "Time = " << timeCur; // Time
-    out << "\t Time step = " << dt << std::endl;
-    out << cSymb << energyString() << std::endl; // Energy
-    // All particles state
-    for (int i = 0; i < pnum; ++i) {
-        out << stateString(i);
-        out << std::endl;
-    }
-
-    std::cout.unsetf(std::ios::fixed | std::ios::scientific);
-    std::cout << std::setprecision(defaultPrecision);
-
-    return out.str().erase(out.str().size()-1);
-}
-
-std::string NBSystem::boundariesString()
-{
-    std::ostringstream out;
-    std::streamsize defaultPrecision = std::cout.precision();
-    out << std::scientific;
-    out << std::setprecision(outPrec);
+    out << std::setprecision(prec);
 
     std::string delim = " ";
     int cWidth = 8; // Minimum column width is 8
-    cWidth += outPrec;
+    cWidth += prec;
 
     for (unsigned int i = 0; i < tri.size(); i = i + 3) {
         out << i / 3;
@@ -382,24 +163,22 @@ std::string NBSystem::boundariesString()
         }
     }
 
-    std::cout.unsetf(std::ios::fixed | std::ios::scientific);
-    std::cout << std::setprecision(defaultPrecision);
-
     return out.str().erase(out.str().size()-1);
 }
 
-void NBSystem::setupCL(int platformId, cl_device_type deviceType)
+std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
 {
+    std::ostringstream out;
     try {
         // List available platforms and devices
         std::vector<cl::Platform> platforms;
-        std::cout << "Available platforms:" << std::endl;
+        out << "Available platforms:" << std::endl;
         cl::Platform::get(&platforms);
         for (auto& platform : platforms ) {
             std::string platformName;
             platform.getInfo((cl_platform_info)CL_PLATFORM_NAME,
                              &platformName);
-            std::cout << " " << platformName << std::endl;
+            out << " " << platformName << std::endl;
             try {
                 std::vector<cl::Device> deviceList;
                 platform.getDevices(CL_DEVICE_TYPE_ALL, &deviceList);
@@ -407,7 +186,7 @@ void NBSystem::setupCL(int platformId, cl_device_type deviceType)
                     std::string deviceName;
                     deviceItem.getInfo((cl_device_info)CL_DEVICE_NAME,
                                        &deviceName);
-                    std::cout << "  " << deviceName << std::endl;
+                    out << "  " << deviceName << std::endl;
                 }
             } catch (const cl::Error &error) {
                 std::cerr << "  Error while getting device list: "
@@ -444,7 +223,7 @@ void NBSystem::setupCL(int platformId, cl_device_type deviceType)
             device = devices.at(0);
             std::string deviceName;
             device.getInfo((cl_device_info)CL_DEVICE_NAME, &deviceName);
-            std::cout << "Selected device: " << deviceName << std::endl;
+            out << "Selected device: " << deviceName;
         } catch (const cl::Error &error) {
             std::cerr << "  Error while selecting device: "
                       << error.what()
@@ -501,19 +280,19 @@ void NBSystem::setupCL(int platformId, cl_device_type deviceType)
         event = cl::Event();
 
     } catch (cl::Error error) {
-        std::cerr << "Caught exception: " << error.what()
+        std::cerr << "Caught exception at setupCL(): " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
         throw;
     }
     initializeCLBuffers();
     setupCLKernelsArgs();
+    return out.str();
 }
 
 void NBSystem::initializeCLBuffers()
 {
     // Create and initialize device buffers
-    //cl::Event event;
     try {
         if (pnum) {
             vectBuffSize = pnum * sizeof(cl_float4);
@@ -748,10 +527,21 @@ void NBSystem::updatePos(double dt, cl::Event &event)
 
 void NBSystem::setDtCoef(double coeff)
 {
-    if (coeff <=0)
+    if (coeff <= 0)
         throw std::invalid_argument("Invalid argument to setDtCoef()");
     dtCoef = coeff;
+    setupCLKernelsArgs();
 }
+
+
+//void NBSystem::setLJparameters(double eps, double rmin)
+//{
+//    if (eps < 0 || rmin < 0)
+//        throw std::invalid_argument("Invalid argument to setLJparams()");
+//    ljEps = eps;
+//    ljRmin = rmin;
+//    setupCLKernelsArgs();
+//}
 
 double NBSystem::getEstDt()
 {
@@ -764,9 +554,6 @@ void NBSystem::evolve(double timeStep)
     if (timeStep <=0)
         throw std::invalid_argument("Invalid argument to evolve()");
     updatePos(timeStep, event);
-    dt = timeStep;
-    timeCur += timeStep;
-    tsNum++;
     updateAcc(event);
 }
 
@@ -774,36 +561,30 @@ void NBSystem::evolveIn(double interval)
 {
     double time = 0;
     double eps = std::numeric_limits<double>::epsilon() * interval;
-
+    double dt = 0;
     do {
         dt = estDt(event);
         if ((time + dt) > interval) dt = interval - time;
         evolve(dt);
         time += dt;
     } while (std::fabs(interval - time) > eps);
-    std::cout << tsNum << std::endl;
 }
 
-cl_float4 NBSystem::getVel(unsigned int i)
+const std::vector<cl_float4> *NBSystem::velData()
 {
     syncArrays();
-    return vel.at(i);
+    return &vel;
 }
 
-cl_float4 NBSystem::getPos(unsigned int i)
+const std::vector<cl_float4> *NBSystem::posData()
 {
     syncArrays();
-    return pos.at(i);
+    return &pos;
 }
 
-double NBSystem::getTimeCur()
+const std::vector<cl_float4> *NBSystem::bndData()
 {
-    return timeCur;
-}
-
-double NBSystem::getTSNum()
-{
-    return tsNum;
+    return &tri;
 }
 
 void NBSystem::syncArrays()
@@ -815,7 +596,6 @@ void NBSystem::syncArrays()
                                     CL_TRUE, 0, vectBuffSize, pos.data());
             queue.enqueueReadBuffer(d_vel,
                                     CL_TRUE, 0, vectBuffSize, vel.data());
-
         } catch (cl::Error error) {
             std::cerr << "Caught exception at syncArrays(): " << error.what()
                       << '(' << error.err() << ')'
@@ -827,7 +607,7 @@ void NBSystem::syncArrays()
     }
 }
 
-void NBSystem::setOutPrec(unsigned int precision)
+unsigned int NBSystem::getPNum() const
 {
-    outPrec = precision;
+    return pnum;
 }

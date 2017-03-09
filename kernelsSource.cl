@@ -1,11 +1,16 @@
+// EPSILON is the depth of the potential well
+// RMIN is the distance at which the potential reaches its minimum
+#define EPSILON 1.0
+#define RMIN 1.0
+
 float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
 {
     float4 r = pos[id]; // Position of the particle
     float4 a = (float4) 0.0f; // Acceleration
 
-    float epsilon = 1.0f;
+    float epsilon = EPSILON;
 
-    float rm = 1.0f; // Distance at which the potential reaches its minimum (F=0)
+    float rm = RMIN; // Distance at which the potential reaches its minimum (F=0)
     float rm6 = pown(rm, 6);
     float rm12 = pown(rm6, 2);
 
@@ -50,9 +55,9 @@ float get_energy_LJ_ptp(float4 *pos1, __global float4 *pos2)
 
     float en = 0.0f; // Potential energy
 
-    float epsilon = 1.0f;
+    float epsilon = EPSILON;
 
-    float rm = 1.0f; // Distance at which the potential reaches its minimum (F=0)
+    float rm = RMIN; // Distance at which the potential reaches its minimum (F=0)
     float rm_over_d6 = 0.0f;
     float rm_over_d12 = 0.0f;
 
@@ -233,7 +238,7 @@ __kernel void checkBoundariesCL(__global float4 *pos,
     float  det = 0.0f;
     float4 dir, edge1, edge2 , pvec, tvec, qvec;
     dir = edge1 = edge2 = pvec = tvec = qvec = (float4) 0.0f;
-    float epsilon = 0.00001f;//10.0f * FLT_MIN; // Some very small number to compare derterminant with
+    float eps = 0.00001f;//10.0f * FLT_MIN; // Some very small number to compare derterminant with
     float4 n0 = (float4) 0.0f; // Normalized plane normal
     float4 xpoint = (float4) 0.0f; // Intersection point
     float4 dr_out = (float4) 0.0f; // Out of space displacement of particle
@@ -269,7 +274,7 @@ __kernel void checkBoundariesCL(__global float4 *pos,
         // (Vertices of boundaries should be listed in counter clockwise order
         // from inside of area.)
         // In both cases there is no boundary crossing. Goes to next triangle
-        if (det < epsilon) {continue;}
+        if (det < eps) {continue;}
 
         // Calculate vector from triangle's zero vertice to displacement origin
         tvec = r0 - vertex[0];
