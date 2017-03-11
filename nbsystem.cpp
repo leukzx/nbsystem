@@ -52,7 +52,7 @@ void NBSystem::addParticle(std::vector<cl_float4> &pos,
                  std::vector<cl_float4> &vel)
 {
     if (pos.size() != vel.size())
-        throw std::runtime_error("Sizes of particle state vectors"
+        throw std::runtime_error("Sizes of the particles' state vectors"
                                  " (mass, pos, vel) are not equal.");
 
     unsigned int num = pos.size();
@@ -66,9 +66,6 @@ void NBSystem::addParticle(std::vector<cl_float4> &pos,
     // Update accelerations
     updateAcc(event);
     event.wait();
-
-//    // Update initial energy
-//    enIn = getEnTot();
 }
 
 void NBSystem::removeParticle(unsigned int i)
@@ -135,7 +132,7 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
 
     vnum = tri.size();
 
-    box.setOuterBoundingBox(tri);
+    box.setBoundingBox(tri);
 
     initializeCLBuffers();
     setupCLKernelsArgs();
@@ -610,4 +607,45 @@ void NBSystem::syncArrays()
 unsigned int NBSystem::getPNum() const
 {
     return pnum;
+}
+
+std::vector<std::array<double, 3> > NBSystem::getMinBox() const
+{
+    return box.getBoundingBox();
+}
+
+void NBSystem::addParticle(unsigned int num, std::array<double, 2> mass,
+                           BoundingBox<double, 3> posBox,
+                           BoundingBox<double, 3> velBox)
+{
+    // This function geerates random particle in the given area
+    // with the given velocity and mass restrictions
+    std::random_device rd;
+    std::default_random_engine generator(rd());
+    std::uniform_real_distribution<double> distribution(0.0, 1.0);
+
+    std::vector<cl_float4> randomPos;
+    std::vector<cl_float4> randomVel;
+
+    for (unsigned int n = 0; n < num; n++) {
+        cl_float4 p; // Particle position
+        cl_float4 v; // Particle velocity
+        for (unsigned int i = 0; i < 3; i++) {
+            p.s[i] = posBox.minVertex()[i]
+                    + (posBox.maxVertex()[i] - posBox.minVertex()[i])
+                      * distribution(generator);
+            v.s[i] = velBox.minVertex()[i]
+                    + (velBox.maxVertex()[i] - velBox.minVertex()[i])
+                      * distribution(generator);
+        }
+
+        p.s[3] = mass.at(0)
+                + (mass.at(1) - mass.at(0)) * distribution(generator);
+        v.s[3] = 0;
+
+        randomPos.emplace_back(p);
+        randomVel.emplace_back(v);
+    }
+
+    this->addParticle(randomPos, randomVel);
 }

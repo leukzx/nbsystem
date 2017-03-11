@@ -11,9 +11,12 @@
 #include <iomanip> // std::setprecision()
 #include <algorithm>
 #include <cmath> // std::fabs()
+#include <random> // std::random_device
 #include <CL/cl.hpp>
 #include <CL/cl_platform.h>
+
 #include "boundingbox.h"
+
 
 
 
@@ -105,19 +108,23 @@ public:
     double getEnKin();
     double getEstDt();
     unsigned int getPNum() const;
-    double getLJeps() const;
-    double getLJrmin() const;
+
+    std::vector<std::array<double, 3> > getMinBox() const;
 
     const std::vector<cl_float4>* posData();
     const std::vector<cl_float4>* velData();
     const std::vector<cl_float4>* bndData();
 
     void setDtCoef(double coeff);
-//    void setLJparameters(double eps, double rmin);
+
 
 
     void addParticle(std::vector<cl_float4> &pos,
                      std::vector<cl_float4> &vel);
+    void addParticle(unsigned int num,
+                     std::array<double, 2> mass,
+                     BoundingBox<double, 3> posBox,
+                     BoundingBox<double, 3> velBox);
     void removeParticle(unsigned int i);
 
     void addBoundary(std::vector<cl_float4> &vertices);

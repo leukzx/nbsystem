@@ -2,10 +2,10 @@
 #include "nbsystem.h"
 #include <libconfig.h++>
 
-class Settings
+class NBSystemSettings
 {
 public:
-    Settings(std::string fileName);
+    NBSystemSettings(std::string fileName);
 
     libconfig::Config cfg;
 
@@ -21,17 +21,18 @@ public:
     double writeInterval;
     double timeStepMax;
     double timeEnd;
-    unsigned int randomParticlesNum;
     bool fixedTimeStep;
+    unsigned int randomParticlesNum;
+    std::array<double, 2> randomMass;
+    BoundingBox<double, 3> randomPosBox;
+    BoundingBox<double, 3> randomVelBox;
 };
 
-Settings::Settings(std::string fileName)
+NBSystemSettings::NBSystemSettings(std::string fileName)
 {
     platformId = -1;
     deviceType = CL_DEVICE_TYPE_CPU;
     dtCoef = 0.01;
-    ljEps = 1;
-    ljRmin = 1;
     outPrec = 6;
     writeInterval = std::numeric_limits<double>::max();
     timeStepMax = std::numeric_limits<double>::max();
@@ -55,8 +56,7 @@ Settings::Settings(std::string fileName)
     try {
 
         try {
-            std::string outFileNameStr = cfg.lookup("Write_to_file");
-            outFileName = outFileNameStr;
+            outFileName = cfg.lookup("Write_to_file").c_str();
         }
         catch(const libconfig::SettingNotFoundException &nfex) {
             std::cerr << "No 'Write_to_file' setting in configuration file."
@@ -65,8 +65,7 @@ Settings::Settings(std::string fileName)
         }
 
         try {
-            std::string particleFileNameStr = cfg.lookup("Particles_data_file");
-            particleFileName = particleFileNameStr;
+            particleFileName = cfg.lookup("Particles_data_file").c_str();
         }
         catch(const libconfig::SettingNotFoundException &nfex) {
             std::cerr << "No 'Particles_data_file' setting"
@@ -76,9 +75,7 @@ Settings::Settings(std::string fileName)
         }
 
         try {
-            std::string boundariesFileNameStr
-                    = (cfg.lookup("Boundaries_data_file"));
-            boundariesFileName = boundariesFileNameStr;
+            boundariesFileName = cfg.lookup("Boundaries_data_file").c_str();
         }
         catch(const libconfig::SettingNotFoundException &nfex) {
             std::cerr << "No 'Write_interval' setting in configuration file."
@@ -113,24 +110,6 @@ Settings::Settings(std::string fileName)
                          " in configuration file."
                       << std::endl;
         }
-
-//        try {
-//            ljEps = cfg.lookup("Lennard-Jones_epsilon");
-//        }
-//        catch(const libconfig::SettingNotFoundException &nfex) {
-//            std::cerr << "No 'Lennard-Jones_epsilon' setting"
-//                         " in configuration file."
-//                      << std::endl;
-//        }
-
-//        try {
-//            ljRmin = cfg.lookup("Lennard-Jones_rmin");
-//        }
-//        catch(const libconfig::SettingNotFoundException &nfex) {
-//            std::cerr << "No 'Lennard-Jones_rmin' setting"
-//                         " in configuration file."
-//                      << std::endl;
-//        }
 
         try {
             outPrec = cfg.lookup("Write_precision");
@@ -169,21 +148,46 @@ Settings::Settings(std::string fileName)
         }
 
         try {
-            randomParticlesNum = cfg.lookup("Random_particles_number");
-        }
-        catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Random_particles_number'"
-                         " setting in configuration file."
-                      << std::endl;
-        }
-
-        try {
             fixedTimeStep = cfg.lookup("Fixed_time_step");
         }
         catch(const libconfig::SettingNotFoundException &nfex) {
             std::cerr << "No 'Fixed_time_step'"
                          " setting in configuration file."
                       << std::endl;
+        }
+
+        try {
+            randomParticlesNum = cfg.lookup("Random_particles.number");
+            libconfig::Setting &min_position
+                    = cfg.lookup("Random_particles.min_position");
+            libconfig::Setting &max_position
+                    = cfg.lookup("Random_particles.max_position");
+            libconfig::Setting &min_velocity
+                    = cfg.lookup("Random_particles.min_velocity");
+            libconfig::Setting &max_velocity
+                    = cfg.lookup("Random_particles.max_velocity");
+            std::array<double, 3> randomPosMin;
+            std::array<double, 3> randomPosMax;
+            std::array<double, 3> randomVelMin;
+            std::array<double, 3> randomVelMax;
+            for (unsigned int i = 0; i < 3; i++) {
+                randomPosMin.at(i) = min_position[i];
+                randomPosMax.at(i) = max_position[i];
+                randomVelMin.at(i) = min_velocity[i];
+                randomVelMax.at(i) = max_velocity[i];
+            }
+            randomPosBox.setMinVertex(randomPosMin);
+            randomPosBox.setMaxVertex(randomPosMax);
+            randomVelBox.setMinVertex(randomVelMin);
+            randomVelBox.setMaxVertex(randomVelMax);
+
+            libconfig::Setting &mass
+                    = cfg.lookup("Random_particles.mass");
+            for (unsigned int i = 0; i < 2; i++)
+                randomMass.at(i) = mass[i];
+        }
+        catch(const libconfig::SettingNotFoundException &nfex) {
+            std::cerr << "No 'Random_particles' setting in configuration file.";
         }
 
     }
@@ -246,10 +250,10 @@ std::string particleStateString(NBSystem &nbsystem,
     }
     for (unsigned int i = 0; i < 3; i++) {
         out << delim;
-        out << std::setw(cWidth) << nbsystem.posData()->at(pId).s[i];
+        out << std::setw(cWidth) << nbsystem.velData()->at(pId).s[i];
     }
     out << delim;
-    out << nbsystem.posData()->at(pId).s[3];
+    out << std::setw(cWidth) << nbsystem.posData()->at(pId).s[3];
 
     return out.str();
 }
@@ -290,7 +294,7 @@ void stateToFile(std::ofstream& outFileStream,
                  const unsigned int& prec
                  )
 {
-    if (outFileStream.is_open()){
+    if (outFileStream.is_open()) {
         outFileStream << systemStateString(nbs,
                                            time,
                                            timeStep,
@@ -298,7 +302,8 @@ void stateToFile(std::ofstream& outFileStream,
                                            enPot,
                                            enInit,
                                            prec);
-        outFileStream << std::endl << std::endl; // End of the data block
+        // End of the data block
+        outFileStream << std::endl << std::endl << std::endl;
     } else {
         throw std::runtime_error("Error at stateToFile()."
                                       " File is not opened.");
@@ -417,14 +422,15 @@ int main(int argc, char *argv[])
       exit(EXIT_FAILURE);
     }
 
-    Settings set(argv[1]);
+    NBSystemSettings set(argv[1]);
     NBSystem nbs;
 
     std::cout << nbs.setupCL(set.platformId, set.deviceType) << std::endl;
     addParticle(set.particleFileName, nbs);
     addBoundary(set.boundariesFileName, nbs);
     nbs.setDtCoef(set.dtCoef);
-    //nbs.setLJparameters(set.ljEps, set.ljRmin);
+    nbs.addParticle(set.randomParticlesNum, set.randomMass,
+                    set.randomPosBox, set.randomVelBox);
 
     double time = 0.0;
     double timeStep = set.timeStepMax;

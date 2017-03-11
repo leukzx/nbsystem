@@ -40,16 +40,16 @@ private:
     std::array<T, N> maxVertex_;
 public:
     BoundingBox();
-
+    std::vector<std::array<T, N> > getBoundingBox() const;
     void setMinVertex(T vertice[N]);
     void setMinVertex(std::array<T, N>& vertice);
     void setMaxVertex(T vertice[N]);
     void setMaxVertex(std::array<T, N>& vertice);
 
     //Sets minimum bounding box
-    void setOuterBoundingBox(std::vector<std::array<T, N> > &vertices);
+    void setBoundingBox(std::vector<std::array<T, N> > &vertices);
 #ifdef __CL_PLATFORM_H
-    void setOuterBoundingBox(std::vector<cl_float4> &vertices);
+    void setBoundingBox(std::vector<cl_float4> &vertices);
 #endif
 
     //void setInnerBoundingBox(std::vector<cl_float4>);
@@ -68,6 +68,13 @@ BoundingBox<T, N>::BoundingBox()
 {
     minVertex_.fill(-std::numeric_limits<T>::max());
     maxVertex_.fill(std::numeric_limits<T>::max());
+}
+
+template<typename T, unsigned int N>
+std::vector<std::array<T, N> > BoundingBox<T, N>::getBoundingBox() const
+{
+    std::vector<std::array<T, N> > box {minVertex_, maxVertex_};
+    return box;
 }
 
 template<typename T, unsigned int N>
@@ -99,7 +106,7 @@ void BoundingBox<T, N>::setMaxVertex(std::array<T, N>& vertex)
 }
 
 template<typename T, unsigned int N>
-void BoundingBox<T, N>::setOuterBoundingBox(std::vector<std::array<T, N>>&
+void BoundingBox<T, N>::setBoundingBox(std::vector<std::array<T, N>>&
                                             vertices)
 {
     T min[N];
@@ -122,7 +129,7 @@ void BoundingBox<T, N>::setOuterBoundingBox(std::vector<std::array<T, N>>&
 
 #ifdef __CL_PLATFORM_H
 template<typename T, unsigned int N>
-void BoundingBox<T, N>::setOuterBoundingBox(std::vector<cl_float4> &vertices)
+void BoundingBox<T, N>::setBoundingBox(std::vector<cl_float4> &vertices)
 {
     T min[N];
     for (unsigned int i = 0; i < N; i++)
