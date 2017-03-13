@@ -2,10 +2,10 @@
 #define EPSILON 1.0
 // RMIN is the distance at which the potential reaches its minimum
 #define RMIN 1.0
-// FORCEFIELD is the mathematical expression of external field acceleration
+// FORCE_FIELD_ACC is the mathematical expression of external field acceleration
 #define FORCE_FIELD_ACC +(float4)(0.0f, 0.0f, -10.0f, 0.0f)
 //#define FORCE_FIELD_ACC
-// FORCEFIELD is the mathematical expression of external field acceleration
+// FORCE_FIELD_ENR is the mathematical expression of external field energy
 #define FORCE_FIELD_ENR +r.w*dot(-2*(float4)(0.0f, 0.0f, -10.0f, 0.0f), r)
 //#define FORCE_FIELD_ENR
 float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
@@ -19,32 +19,40 @@ float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
     float rm6 = pown(rm, 6);
     float rm12 = pown(rm6, 2);
 
+    float rc = 2.22724679535085 * rm; // Truncation distance
+    float Fc = -4.37754333446651E-02 * epsilon; // Force shift value
+
     float4 relr = (float4) 0.0f; // Relative radius-vector of p2 to p1
     float d = 0.0f; // Distance from p2 to p1
     float d7 = 0.0f;
     float d13 = 0.0f;
 
-    // Accleration of the particle
+    // Accleration of the i-th particle
+
     for (int j = 0; j < id; ++j) {
         relr.xyz = pos[j].xyz - r.xyz;
         d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-        d7 = pown(d, 7);
-        d13 = pow (d7, 2) / d;
-        a.xyz += 12
-               * epsilon
-               * (rm6 / d7 - rm12 / d13)
-               * relr.xyz / d;
+        if (d <= rc) {
+            d7 = pown(d, 7);
+            d13 = pown(d7, 2) / d;
+            a.xyz += (12
+                   * epsilon
+                   * (rm6 / d7 - rm12 / d13) - Fc)
+                   * relr.xyz / d;
+        }
     }
 
     for (int j = id + 1; j < pnum; ++j) {
         relr.xyz = pos[j].xyz - r.xyz;
         d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-        d7 = pown(d, 7);
-        d13 = pow (d7, 2) / d;
-        a.xyz += 12
-               * epsilon
-               * (rm6 / d7 - rm12 / d13)
-               * relr.xyz / d;
+        if (d <= rc) {
+            d7 = pown(d, 7);
+            d13 = pown(d7, 2) / d;
+            a.xyz += (12
+                   * epsilon
+                   * (rm6 / d7 - rm12 / d13) + Fc)
+                   * relr.xyz / d;
+        }
     }
 
     a.w = 0.0f;
@@ -66,14 +74,19 @@ float get_energy_LJ_ptp(float4 *pos1, __global float4 *pos2)
     float rm_over_d6 = 0.0f;
     float rm_over_d12 = 0.0f;
 
+    float rc = 2.22724679535085 * rm; // Truncation distance
+    float Vc = -1.63168911360000E-02 * epsilon; // Potential shift value
+
     float4 relr = (float4) 0.0f; // Relative radius-vector of p1 to p2
     float d = 0.0f; // Distance from p1 to p2
 
     relr.xyz = (*pos1).xyz - (*pos2).xyz;
     d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-    rm_over_d6 = pown(rm / d, 6);
-    rm_over_d12 = pow (rm_over_d6, 2);
-    en = epsilon * (rm_over_d12 - 2 * rm_over_d6);
+    if (d <= rc) {
+        rm_over_d6 = pown(rm / d, 6);
+        rm_over_d12 = pown(rm_over_d6, 2);
+        en = epsilon * (rm_over_d12 - 2 * rm_over_d6) - Vc;
+    }
 
     return en;
 }

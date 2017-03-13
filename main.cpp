@@ -271,7 +271,7 @@ std::string systemStateString(NBSystem &nbsystem,
     std::string cSymb = "#";
 
     outStr << cSymb << "Time = " << time; // Time
-    outStr << "\t Time step = " << timeStep << std::endl;
+    outStr << "\t Avg time step = " << timeStep << std::endl;
     outStr << cSymb;
     outStr << energyString(enKin, enPot, enInit, prec) << std::endl;
     // All particles state
@@ -434,11 +434,13 @@ int main(int argc, char *argv[])
 
     double time = 0.0;
     double timeStep = set.timeStepMax;
+    double timeStepAvg = 0;
     double timeEnd = set.timeEnd;
     double writeInterval = set.writeInterval;
     double writeTime = 0.0; // Write time counter
     double eps = std::numeric_limits<double>::epsilon() * timeStep;
-    unsigned int nSteps;
+    unsigned int nStepsTotal = 0;
+    unsigned int nStepsAvg = 0;
     double enKin = nbs.getEnKin();
     double enPot = nbs.getEnPot();
     double enTot = enKin + enPot;
@@ -447,7 +449,6 @@ int main(int argc, char *argv[])
     std::ofstream outFileStream;
     // Output, append
     outFileStream.open(set.outFileName, std::ofstream::out | std::ofstream::app);
-
     stateToFile(outFileStream, nbs, time, timeStep,
                 enKin, enPot, enInit, prec);
 
@@ -456,56 +457,143 @@ int main(int argc, char *argv[])
     std::cout << std::setprecision(prec);
     std::cout << std::right;
 
-    do {
-        timeStep = nbs.getEstDt();
+    // Two branches
+    // First - time step estimates for every move of the system
+    // Second - time step is fixed
+    // It was choosen to not to check if time step is fixed in every iteration
+    if (!set.fixedTimeStep)
+        do {
+            // Estimate time step
+            timeStep = nbs.getEstDt();
 
-        // Check timeStep to not overshoot write time
-        if ((writeTime + timeStep) > writeInterval)
-            timeStep = writeInterval - writeTime;
-        // Check timeStep to not overshoot end time
-        if ((time + timeStep) > set.timeEnd)
-            timeStep = timeEnd - time;
+            // Check timeStep to not overshoot write time
+            if ((writeTime + timeStep) > writeInterval)
+                timeStep = writeInterval - writeTime;
 
-        // Move particles
-        nbs.evolve(timeStep);
+            // Check timeStep to not overshoot end time
+            if ((time + timeStep) > timeEnd)
+                timeStep = timeEnd - time;
 
-        // Increase time counter
-        time += timeStep;
+            // Move particles
+            nbs.evolve(timeStep);
 
-        // Increase number of steps
-        nSteps++;
+            // Increase time counter
+            time += timeStep;
+            writeTime += timeStep;
 
-        // Write data to file
-        writeTime += timeStep;
-        if (std::fabs(writeInterval - writeTime) < eps
-                || std::fabs(time - timeEnd) < eps) {
-            //stateToFile(outFileStream, nbs);
-            enKin = nbs.getEnKin();
-            enPot = nbs.getEnPot();
-            enTot = enKin + enPot;
-            stateToFile(outFileStream, nbs, time, timeStep,
-                        enKin, enPot, enInit, prec);
-            writeTime = 0;
+            // Increase number of steps
+            nStepsTotal++;
+            nStepsAvg++;
 
-            // Print current progress to console
-            std::cout << "Time: " << time << "  "
-                      << "Time Step: " << timeStep
-                      << "  ";
-            if (enInit) {
-                std::cout << "(E_tot-E_init)/E_init=";
-                std::cout << (enTot - enInit)/enInit;
-            } else {
-                std::cout << "E_init=0\t(E_tot-E_init)=";
-                std::cout << (enTot - enInit);
+            // Write data to file
+            if (std::fabs(writeInterval - writeTime) < eps) {
+                //|| std::fabs(time - timeEnd) < eps) {
+                timeStepAvg = writeTime / nStepsAvg;
+                nStepsAvg = 0;
+                writeTime = 0;
+                enKin = nbs.getEnKin();
+                enPot = nbs.getEnPot();
+                enTot = enKin + enPot;
+                stateToFile(outFileStream, nbs, time, timeStepAvg,
+                            enKin, enPot, enInit, prec);
+
+                // Print current progress to console
+                std::cout << "Time: " << time << "  "
+                          << "Avg time step: " << timeStepAvg
+                          << "  ";
+                if (enInit) {
+                    std::cout << "(E_tot-E_init)/E_init=";
+                    std::cout << (enTot - enInit)/enInit;
+                } else {
+                    std::cout << "E_init=0\t(E_tot-E_init)=";
+                    std::cout << (enTot - enInit);
+                }
+                std::cout << std::endl;
             }
-            std::cout << std::endl;
-        }
+        } while (std::fabs(timeEnd - time) > eps);
+     else
+        do {
+            // Check timeStep to not overshoot write time
+            if ((writeTime + timeStep) > writeInterval)
+                timeStep = writeInterval - writeTime;
 
-    } while (std::fabs(timeEnd - time) > eps);
+            // Check timeStep to not overshoot end time
+            if ((time + timeStep) > timeEnd)
+                timeStep = timeEnd - time;
+
+            // Move particles
+            nbs.evolve(timeStep);
+
+            // Increase time counter
+            time += timeStep;
+            writeTime += timeStep;
+
+            // Increase number of steps
+            nStepsTotal++;
+            nStepsAvg++;
+
+            // Write data to file
+            if (std::fabs(writeInterval - writeTime) < eps) {
+                //|| std::fabs(time - timeEnd) < eps) {
+                timeStepAvg = writeTime / nStepsAvg;
+
+                enKin = nbs.getEnKin();
+                enPot = nbs.getEnPot();
+                enTot = enKin + enPot;
+
+                stateToFile(outFileStream, nbs, time, timeStepAvg,
+                            enKin, enPot, enInit, prec);
+
+                nStepsAvg = 0;
+                writeTime = 0;
+                timeStep = set.timeStepMax;
+
+                // Print current progress to console
+                std::cout << "Time: " << time << "  "
+                          << "Avg time step: " << timeStepAvg
+                          << "  ";
+                if (enInit) {
+                    std::cout << "(E_tot-E_init)/E_init=";
+                    std::cout << (enTot - enInit)/enInit;
+                } else {
+                    std::cout << "E_init=0\t(E_tot-E_init)=";
+                    std::cout << (enTot - enInit);
+                }
+                std::cout << std::endl;
+            }
+        } while (std::fabs(timeEnd - time) > eps);
+
+
+    // Write to file system's final state if it is not written already
+    if (writeTime) {
+        timeStepAvg = writeTime / nStepsAvg;
+        nStepsAvg = 0;
+        writeTime = 0;
+        enKin = nbs.getEnKin();
+        enPot = nbs.getEnPot();
+        enTot = enKin + enPot;
+        stateToFile(outFileStream, nbs, time, timeStepAvg,
+                    enKin, enPot, enInit, prec);
+
+        // Print current progress to console
+        std::cout << "Time: " << time << "  "
+                  << "Avg time step: " << timeStepAvg
+                  << "  ";
+        if (enInit) {
+            std::cout << "(E_tot-E_init)/E_init=";
+            std::cout << (enTot - enInit)/enInit;
+        } else {
+            std::cout << "E_init=0\t(E_tot-E_init)=";
+            std::cout << (enTot - enInit);
+        }
+        std::cout << std::endl;
+    }
+
 
     outFileStream.close();
 
-    std::cout << "Time steps: " << nSteps << std::endl;
+    std::cout << "Number of time steps: " << nStepsTotal << std::endl;
+    std::cout << "Average time step: " << (time / nStepsTotal) << std::endl;
 
     return 0;
 }
