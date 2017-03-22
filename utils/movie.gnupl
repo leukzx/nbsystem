@@ -1,0 +1,22 @@
+set key off
+set grid 
+set xrange [-60:60]
+set yrange [-60:60]
+set zrange [-510:510]
+set terminal pngcairo size 640,480 #enhanced font 'Verdana,10'
+
+#datFile(n) = sprintf("%d.dat",n)
+datFile = "output.dat"
+boundariesFile = "boundaries.dat"
+outFile(n) = sprintf("mov/%06d.png",n)
+
+
+do for [j=0:2000:1] {
+	set output outFile(j)
+	#plot for [i=0:1:1] datFile(i)  using 2:3 every :::j::j
+	#plot "output.dat" index j using 2:3 
+        splot for [i=0:1023:1] datFile index j using 2:3:4 every 1:1:i:0:i:0 \
+                             , for [bi=0:6] boundariesFile index bi with lines 
+	#replot for [i=0:99:1] datFile(i)  using 2:3:6:7 every ::j::j with vectors
+	pause 0.1
+}

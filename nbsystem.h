@@ -16,9 +16,7 @@
 #include <CL/cl_platform.h>
 
 #include "boundingbox.h"
-
-
-
+#include "boundary.h"
 
 class NBSystem
 {
@@ -34,6 +32,11 @@ private:
     std::vector<cl_float4> tri;
     // Number of vertices
     unsigned int vnum;
+
+    // Boundaries vector
+    std::vector<Boundary> boundaries;
+    // Number of boundaries
+    unsigned int bndNum;
 
     // Minimal bounding box
     BoundingBox<double, 3> box;
@@ -74,6 +77,7 @@ private:
     cl::Buffer d_vel;
     cl::Buffer d_acc;
     cl::Buffer d_tri;
+    cl::Buffer d_bnd;
     cl::Buffer d_enKin;
     cl::Buffer d_enPot;
     int d_est_len;     // To not to calculate over and over again
@@ -118,13 +122,16 @@ public:
     void setDtCoef(double coeff);
 
 
-
+    // Add several paricles at once
     void addParticle(std::vector<cl_float4> &pos,
                      std::vector<cl_float4> &vel);
-    void addParticle(unsigned int num,
-                     std::array<double, 2> mass,
-                     BoundingBox<double, 3> posBox,
-                     BoundingBox<double, 3> velBox);
+
+    // Add several particles with random parameters
+    void addParticle(const unsigned int &num,
+                     const std::array<double, 2>  &mass,
+                     const BoundingBox<double, 3> &posBox,
+                     const BoundingBox<double, 3> &velBox);
+
     void removeParticle(unsigned int i);
 
     void addBoundary(std::vector<cl_float4> &vertices);

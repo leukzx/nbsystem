@@ -2,13 +2,18 @@
 #define EPSILON 1.0
 // RMIN is the distance at which the potential reaches its minimum
 #define RMIN 1.0
-// FORCEFIELD is the mathematical expression of external field acceleration
-#define FORCE_FIELD_ACC +(float4)(0.0f, 0.0f, -10.0f, 0.0f)
-//#define FORCE_FIELD_ACC
-// FORCEFIELD is the mathematical expression of external field acceleration
-#define FORCE_FIELD_ENR +r.w*dot(-2*(float4)(0.0f, 0.0f, -10.0f, 0.0f), r)
-//#define FORCE_FIELD_ENR
-float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
+
+// FORCE_FIELD_ACC is the mathematical expression of external field acceleration
+//#define FORCE_FIELD_ACC +(float4)(0.0f, 0.0f, -10.0f, 0.0f)
+#define FORCE_FIELD_ACC
+
+// FORCE_FIELD_ENR is the mathematical expression of external field energy
+//#define FORCE_FIELD_ENR +r.w*dot(-2*(float4)(0.0f, 0.0f, -10.0f, 0.0f), r)
+#define FORCE_FIELD_ENR
+
+#include "boundary.h"
+
+inline float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
 {
     float4 r = pos[id]; // Position of the particle
     float4 a = (float4) 0.0f; // Acceleration
@@ -19,32 +24,40 @@ float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
     float rm6 = pown(rm, 6);
     float rm12 = pown(rm6, 2);
 
+    float rc = 2.22724679535085 * rm; // Truncation distance
+    float Fc = -4.37754333446651E-02 * epsilon; // Force shift value
+
     float4 relr = (float4) 0.0f; // Relative radius-vector of p2 to p1
     float d = 0.0f; // Distance from p2 to p1
     float d7 = 0.0f;
     float d13 = 0.0f;
 
-    // Accleration of the particle
+    // Accleration of the i-th particle
+
     for (int j = 0; j < id; ++j) {
         relr.xyz = pos[j].xyz - r.xyz;
         d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-        d7 = pown(d, 7);
-        d13 = pow (d7, 2) / d;
-        a.xyz += 12
-               * epsilon
-               * (rm6 / d7 - rm12 / d13)
-               * relr.xyz / d;
+        if (d <= rc) {
+            d7 = pown(d, 7);
+            d13 = pown(d7, 2) / d;
+            a.xyz += (12
+                   * epsilon
+                   * (rm6 / d7 - rm12 / d13) - Fc)
+                   * relr.xyz / d;
+        }
     }
 
     for (int j = id + 1; j < pnum; ++j) {
         relr.xyz = pos[j].xyz - r.xyz;
         d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-        d7 = pown(d, 7);
-        d13 = pow (d7, 2) / d;
-        a.xyz += 12
-               * epsilon
-               * (rm6 / d7 - rm12 / d13)
-               * relr.xyz / d;
+        if (d <= rc) {
+            d7 = pown(d, 7);
+            d13 = pown(d7, 2) / d;
+            a.xyz += (12
+                   * epsilon
+                   * (rm6 / d7 - rm12 / d13) + Fc)
+                   * relr.xyz / d;
+        }
     }
 
     a.w = 0.0f;
@@ -53,7 +66,7 @@ float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
     return a;
 }
 
-float get_energy_LJ_ptp(float4 *pos1, __global float4 *pos2)
+inline float get_energy_LJ_ptp(float4 *pos1, __global float4 *pos2)
 {
     // Function calculates potential energy of a particle
     // in L-J potential field of other particle.
@@ -66,14 +79,19 @@ float get_energy_LJ_ptp(float4 *pos1, __global float4 *pos2)
     float rm_over_d6 = 0.0f;
     float rm_over_d12 = 0.0f;
 
+    float rc = 2.22724679535085 * rm; // Truncation distance
+    float Vc = -1.63168911360000E-02 * epsilon; // Potential shift value
+
     float4 relr = (float4) 0.0f; // Relative radius-vector of p1 to p2
     float d = 0.0f; // Distance from p1 to p2
 
     relr.xyz = (*pos1).xyz - (*pos2).xyz;
     d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-    rm_over_d6 = pown(rm / d, 6);
-    rm_over_d12 = pow (rm_over_d6, 2);
-    en = epsilon * (rm_over_d12 - 2 * rm_over_d6);
+    if (d <= rc) {
+        rm_over_d6 = pown(rm / d, 6);
+        rm_over_d12 = pown(rm_over_d6, 2);
+        en = epsilon * (rm_over_d12 - 2 * rm_over_d6) - Vc;
+    }
 
     return en;
 }
@@ -160,7 +178,6 @@ __kernel void calcAccCL(__global float4 *pos, __global float4 *acc)
 }
 
 
-
 __kernel void estimateDtCL(__global float4 *pos,
                            __global float4 *vel,
                            __global float4 *acc,
@@ -170,36 +187,31 @@ __kernel void estimateDtCL(__global float4 *pos,
     // particle id1.
     size_t id0 = get_global_id(0);
     size_t id1 = get_global_id(1);
-
-    float4 relPos;
-    float4 relVel;
-    float4 relAcc;
-
-    float d, v, a, t, est0, est1;
-
+    float t = FLT_MAX;
 
     if (id0 != id1) {
-        est0 = FLT_MAX;
-        est1 = FLT_MAX;
 
-        relPos = pos[id0] - pos[id1];
+        float est0 = FLT_MAX;
+        float est1 = FLT_MAX;
+
+        float4 relPos = pos[id0] - pos[id1];
         relPos.w = 0;
-        d =  sqrt(relPos.x * relPos.x
+        float d =  sqrt(relPos.x * relPos.x
                 + relPos.y * relPos.y
                 + relPos.z * relPos.z);
 
-        relVel = vel[id0] - vel[id1];
+        float4 relVel = vel[id0] - vel[id1];
         //if (dot(relPos, relVel) < 0) {
-            v =  sqrt(relVel.x * relVel.x
+            float v =  sqrt(relVel.x * relVel.x
                     + relVel.y * relVel.y
                     + relVel.z * relVel.z);
             est0 = d / v;
             if (isnan(est0)) {est0 = FLT_MAX;}
         //}
 
-        relAcc = acc[id0] - acc[id1];
+        float4 relAcc = acc[id0] - acc[id1];
         //if (dot(relPos, relAcc) < 0) {
-            a =  sqrt(relAcc.x * relAcc.x
+            float a =  sqrt(relAcc.x * relAcc.x
                     + relAcc.y * relAcc.y
                     + relAcc.z * relAcc.z);
             est1 = sqrt(2 * d / a);
@@ -209,8 +221,6 @@ __kernel void estimateDtCL(__global float4 *pos,
         //est1 = (a != 0)?(sqrt(d / a)):FLT_MAX;
 
         t = (est0 < est1)?est0:est1;
-    } else {
-        t = FLT_MAX;
     }
 
     size_t width = get_global_size(0);
@@ -221,19 +231,19 @@ __kernel void estimateDtCL(__global float4 *pos,
 __kernel void checkBoundariesCL(__global float4 *pos,
                                 __global float4 *vel,
                                 __global float4 *newPos,
-                                __global float4 *verts,
-                                            int vNum)
+                                __global Boundary *bnd,
+                                            int bnd_num)
 {
 //
 //https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
 //
     size_t gid = get_global_id(0);
-    size_t vnum = vNum;
+    size_t bnum = bnd_num;
 
     float4 r1 = newPos[gid]; // New position
     float4 r0 = pos[gid]; // Previous position
-
     float4 v = vel[gid];
+
     // Border vertices
     float4 vertex[3] = {(float4) 0.0f, (float4) 0.0f, (float4) 0.0f};
 
@@ -246,86 +256,96 @@ __kernel void checkBoundariesCL(__global float4 *pos,
     float4 n0 = (float4) 0.0f; // Normalized plane normal
     float4 xpoint = (float4) 0.0f; // Intersection point
     float4 dr_out = (float4) 0.0f; // Out of space displacement of particle
+    // dir * vpar is the relative position to r0 of intersection point
+    float vpar = FLT_MAX;
 
     // Boundary crossing flag
     // Each time there is a crossing, particle moves to new position
     // Boundaries are checked several times until there are no new crossings
     bool flag = 0;
 
-    do{
-    flag = 0;
+    do {
+        // Particle displacement or direction vector, or segment
+        dir = r1 - r0;
+        //dir.w = 0;
+        if (length(dir) == 0) break;
+        // Set intersection flag to no crossing
+        flag = 0;
+        // Process all boundaries
+        for (size_t i = 0; i < bnum; i++) {
+            edge1 = bnd[i].edge1;
+            edge2 = bnd[i].edge2;
 
-    // Particle displacement or direction vector, or segment
-    dir = r1 - r0;
-    //dir.w = 0;
+            pvec = cross(dir, edge2);
+            det = dot(edge1, pvec);
+            // If determinant is 0, displacement lies in plane of triangle
+            // If determinat is negative, triangle is crossed from outside.
+            // (Vertices of boundaries should be listed in counter clockwise order
+            // from inside of area.)
+            // In both cases there is no boundary crossing. Goes to next triangle
+            if (det < eps) continue;
 
-    if (length(dir) == 0) {break;}
+            // Calculate vector from triangle's zero vertice to displacement origin
+            tvec = r0 - bnd[i].v0;
+            //tvec.w = 0;
 
-    for (size_t i = 0; i < vnum; i += 3) {
-        // Get another 3 vertices from vertices array
-        for (size_t k = 0; k < 3; ++k) {vertex[k] = verts[i+k];}
+            // Calculate U parameter and test bounds
+            tuv.y = dot(tvec, pvec);
+            if (tuv.y < 0.0f || tuv.y > det) continue;
 
-        // ?Maybe it is better to pre process edges
-        edge1 = vertex[1] - vertex[0];
-        edge1.w = 0;
-        edge2 = vertex[2] - vertex[0];
-        edge2.w = 0;
+            // Prepare to test V parameter
+            qvec = cross(tvec, edge1);
 
-        pvec = cross(dir, edge2);
-        det = dot(edge1, pvec);
-        // If determinant is 0, displacement lies in plane of triangle
-        // If determinat is negative, triangle is crossed from outside.
-        // (Vertices of boundaries should be listed in counter clockwise order
-        // from inside of area.)
-        // In both cases there is no boundary crossing. Goes to next triangle
-        if (det < eps) {continue;}
+            // Calculate V parameter and test bounds
+            tuv.z = dot(dir, qvec);
+            if (tuv.z < 0.0f || (tuv.y + tuv.z) > det) continue;
 
-        // Calculate vector from triangle's zero vertice to displacement origin
-        tvec = r0 - vertex[0];
-        tvec.w = 0;
+            // Calculate T parameter and test bounds
+            // tuv.x = 0.0f if origin of displacement lies in the triangle's plane
+            // This may happen only when there was boundary crossing and
+            // it was aleady processed.
+            // This crossing should be excluded from further consderation.
+            tuv.x  = dot (edge2, qvec);
+            if (tuv.x <= 0.0f || tuv.x > det) continue;
 
-        // Calculate U parameter and test bounds
-        tuv.y = dot(tvec, pvec);
-        if (tuv.y < 0.0f || tuv.y > det) {continue;}
+            // Segment intersects triangle
+            // Set intersection flag
+            flag = 1;
 
-        // Prepare to test V parameter
-        qvec = cross(tvec, edge1);
+            // Scale parameters
+            tuv /= det;
 
-        // Calculate V parameter and test bounds
-        tuv.z = dot(dir, qvec);
-        if (tuv.z < 0.0f || (tuv.y + tuv.z) > det) {continue;}
+            // Find closest intersection point
+            if (vpar > tuv.x) {
+                vpar = tuv.x;
+                // Normal vector to crossed boundary
+                n0 = bnd[i].n0;
+            }
+        }
 
-        // Calculate T parameter and test bounds
-        tuv.x  = dot (edge2, qvec);
-        if (tuv.x < 0.0f || tuv.x > det) {continue;}
+        if (flag) {
+            // Calculate intersection point
+            xpoint = r0 + dir * vpar;
 
-        // Segment intersects triangle
-        // Scale parameters
-        tuv /= det;
+            // New velocity
+            v = v - 2 * dot(v, n0) * n0; // Mirrors v against boundary
 
-        // Set intersection flag
-        flag = 1;
-        // Calculate intersection point
-        xpoint = r0 + dir * tuv.x;
-        // Calculate plane normal of triangle
-        n0 = normalize(cross(edge1, edge2));
+            // Out of plane displacement
+            dr_out = r1 - xpoint;
+            // Mirror dr against boundary
+            dr_out = dr_out - 2 * dot(dr_out, n0) * n0;
+            // Save old position.
+            //r0 = r1;
+            // Crossing point becomes origin of the displacement
+            // to process all futher possible boundary crossings
+            r0 = xpoint;
 
-        // New velocity
-        v = v - 2 * dot(v, n0) * n0; // Mirrors v against boundary
+            //Calculate new position
+            r1 = xpoint + dr_out;
 
-        // Out of plane displacement
-        dr_out = r1 - xpoint;
-        dr_out = dr_out - 2 * dot(dr_out, n0) * n0; // Mirrors dr against boundary
-        // Save old position. Calculate new position
-        r0 = r1;
-        r1 = xpoint + dr_out;
-
-        // Save new values to array
-        newPos[gid] = r1;
-        vel[gid] = v;
-        // Stop check other triangles. Do all checks again. (?)
-        break;
-    }
-
+            // Save new values to array
+            newPos[gid] = r1;
+            vel[gid] = v;
+        }
     } while (flag); // Do loop until there are no new intersections
 }

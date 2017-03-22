@@ -5,8 +5,7 @@ NBSystem::NBSystem()
     pnum = 0;
     vnum = 0;
     dtCoef = 0.01;
-//    ljRmin = 1;
-//    ljEps = 1;
+    bndNum = 0;
     syncFlag = false;
 
     curBuffIndex = 0;
@@ -93,32 +92,33 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
     // Should add check if vertices are coplanar
     if (vertices.size() > 3) {
         cl_float4 a;
-        a.s0 = vertices.at(1).s0 - vertices.at(0).s0;
-        a.s1 = vertices.at(1).s1 - vertices.at(0).s1;
-        a.s2 = vertices.at(1).s2 - vertices.at(0).s2;
-        a.s3 = 0.0f;
+        a.s[0] = vertices.at(1).s[0] - vertices.at(0).s[0];
+        a.s[1] = vertices.at(1).s[1] - vertices.at(0).s[1];
+        a.s[2] = vertices.at(1).s[2] - vertices.at(0).s[2];
+        a.s[3] = 0.0f;
         cl_float4 b;
-        b.s0 = vertices.at(2).s0 - vertices.at(0).s0;
-        b.s1 = vertices.at(2).s1 - vertices.at(0).s1;
-        b.s2 = vertices.at(2).s2 - vertices.at(0).s2;
-        b.s3 = 0.0f;
+        b.s[0] = vertices.at(2).s[0] - vertices.at(0).s[0];
+        b.s[1] = vertices.at(2).s[1] - vertices.at(0).s[1];
+        b.s[2] = vertices.at(2).s[2] - vertices.at(0).s[2];
+        b.s[3] = 0.0f;
         cl_float4 axb;
-        axb.s0 = a.s1 * b.s2 - b.s1 * a.s2;
-        axb.s1 = -(a.s0 * b.s2 - b.s0 * a.s2);
-        axb.s2 = a.s0 * b.s1 - b.s0 * a.s1;
-        axb.s3 = 0.0f;
+        axb.s[0] = a.s[1] * b.s[2] - b.s[1] * a.s[2];
+        axb.s[1] = -(a.s[0] * b.s[2] - b.s[0] * a.s[2]);
+        axb.s[2] = a.s[0] * b.s[1] - b.s[0] * a.s[1];
+        axb.s[3] = 0.0f;
 
         // Some number to compare result to zero
         float eps = 1e-5;
 
         for (unsigned int i = 3; i < vertices.size(); i++){
             cl_float4 c;
-            c.s0 = vertices.at(i).s0 - vertices.at(0).s0;
-            c.s1 = vertices.at(i).s1 - vertices.at(0).s1;
-            c.s2 = vertices.at(i).s2 - vertices.at(0).s2;
-            c.s3 = 0.0f;
+            c.s[0] = vertices.at(i).s[0] - vertices.at(0).s[0];
+            c.s[1] = vertices.at(i).s[1] - vertices.at(0).s[1];
+            c.s[2] = vertices.at(i).s[2] - vertices.at(0).s[2];
+            c.s[3] = 0.0f;
 
-            cl_float abc = axb.s0 * c.s0 + axb.s1 * c.s1 + axb.s2 * c.s2;
+            cl_float abc =
+                    axb.s[0] * c.s[0] + axb.s[1] * c.s[1] + axb.s[2] * c.s[2];
             if (abc > eps)
                 throw std::runtime_error("Invalid boundary:"
                                          "vertices are not coplanar.");
@@ -133,6 +133,39 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
     vnum = tri.size();
 
     box.setBoundingBox(tri);
+
+    for (unsigned int i = 1; i < vertices.size() - 1; i++) {
+        Boundary bnd;
+        bnd.v0 = vertices.at(0);
+
+        // Calculate edges of boundary
+        for (unsigned int j = 0; j < 3; j++) {
+            bnd.edge1.s[j] = vertices.at(i).s[j] - bnd.v0.s[j];
+            bnd.edge2.s[j] = vertices.at(i+1).s[j] - bnd.v0.s[j];
+        }
+        bnd.edge1.s[3] = 0.0f;
+        bnd.edge2.s[3] = 0.0f;
+
+        // Calculate normalized normal vector to boundary
+        bnd.n0.s[0] = bnd.edge1.s[1] * bnd.edge2.s[2]
+                                        - bnd.edge2.s[1] * bnd.edge1.s[2];
+        bnd.n0.s[1] = -(bnd.edge1.s[0] * bnd.edge2.s[2]
+                                        - bnd.edge2.s[0] * bnd.edge1.s[2]);
+        bnd.n0.s[2] = bnd.edge1.s[0] * bnd.edge2.s[1]
+                                        - bnd.edge2.s[0] * bnd.edge1.s[1];
+        bnd.n0.s[3] = 0.0f;
+
+        float n0length = std::sqrt(bnd.n0.s[0] * bnd.n0.s[0]
+                                 + bnd.n0.s[1] * bnd.n0.s[1]
+                                 + bnd.n0.s[2] * bnd.n0.s[2]);
+        bnd.n0.s[0] /= n0length;
+        bnd.n0.s[1] /= n0length;
+        bnd.n0.s[2] /= n0length;
+
+        boundaries.emplace_back(bnd);
+    }
+
+    bndNum = boundaries.size();
 
     initializeCLBuffers();
     setupCLKernelsArgs();
@@ -153,9 +186,9 @@ std::string NBSystem::boundariesString(unsigned int prec)
         out << i / 3;
         out << std::endl;
         for (unsigned int j = 0; j < 3; j++) {
-            out << delim << std::setw(cWidth) << tri.at(i+j).s0;
-            out << delim << std::setw(cWidth) << tri.at(i+j).s1;
-            out << delim << std::setw(cWidth) << tri.at(i+j).s2;
+            out << delim << std::setw(cWidth) << tri.at(i+j).s[0];
+            out << delim << std::setw(cWidth) << tri.at(i+j).s[1];
+            out << delim << std::setw(cWidth) << tri.at(i+j).s[2];
             out << std::endl;
         }
     }
@@ -239,10 +272,28 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
         file.close();
 
         // Create vector of kernel sources. ?There are may be more then 1?
-        cl::Program::Sources
-                kernelSourceVec(1,
-                                std::make_pair(kernelSourceStr.data(),
+//        cl::Program::Sources
+//                kernelSourceVec(1,
+//                                std::make_pair(kernelSourceStr.data(),
+//                                               kernelSourceStr.length()+1));
+        cl::Program::Sources kernelSourceVec;
+
+        kernelSourceVec.emplace_back(std::make_pair(kernelSourceStr.data(),
                                                kernelSourceStr.length()+1));
+
+        std::string kernelSourceFileName2 = "boundary.h";
+        std::ifstream file2(kernelSourceFileName2);
+        if (!file2.is_open())
+            throw std::runtime_error("Error reading kernels source file.");
+
+        std::string kernelSourceStr2(std::istreambuf_iterator<char>(file),
+                                    (std::istreambuf_iterator<char>()));
+        file2.close();
+
+        kernelSourceVec.emplace_back(std::make_pair(kernelSourceStr2.data(),
+                                               kernelSourceStr2.length()+1));
+
+
         // Create an OpenCL program object for the context
         // and load the source code specified by the text strings in each
         // element of the vector sources into the program object
@@ -339,6 +390,18 @@ void NBSystem::initializeCLBuffers()
                                      tri.data(), NULL, &event);
             event.wait();
         }
+
+        int bndNum = boundaries.size();
+        if (bndNum) {
+            size_t bndBufSize = bndNum * sizeof(Boundary);
+            d_bnd = cl::Buffer(context, CL_MEM_READ_WRITE,
+                               bndBufSize);
+
+            queue.enqueueWriteBuffer(d_bnd, CL_TRUE,
+                                     0, bndBufSize,
+                                     boundaries.data(), NULL, &event);
+            event.wait();
+        }
     }  catch (cl::Error error) {
         std::cerr << "Caught exception at initializeCLBuffers(): "
                   << error.what()
@@ -374,8 +437,10 @@ void NBSystem::setupCLKernelsArgs()
 //      checkBoundaries.setArg(0, d_pos);
         checkBoundaries.setArg(1, d_vel);
 //      checkBoundaries.setArg(2, d_newPos);
-        checkBoundaries.setArg(3, d_tri);
-        checkBoundaries.setArg(4, vnum);
+        //checkBoundaries.setArg(3, d_tri);
+        //checkBoundaries.setArg(4, vnum);
+        checkBoundaries.setArg(3, d_bnd);
+        checkBoundaries.setArg(4, bndNum);
 
         // Set calcEnKin kernel arguments
 //      calcEnKin.setArg(0, d_pos);
@@ -614,11 +679,12 @@ std::vector<std::array<double, 3> > NBSystem::getMinBox() const
     return box.getBoundingBox();
 }
 
-void NBSystem::addParticle(unsigned int num, std::array<double, 2> mass,
-                           BoundingBox<double, 3> posBox,
-                           BoundingBox<double, 3> velBox)
+void NBSystem::addParticle(const unsigned int &num,
+                           const std::array<double, 2> &mass,
+                           const BoundingBox<double, 3> &posBox,
+                           const BoundingBox<double, 3> &velBox)
 {
-    // This function geerates random particle in the given area
+    // This function generates random particle in the given area
     // with the given velocity and mass restrictions
     std::random_device rd;
     std::default_random_engine generator(rd());
@@ -628,8 +694,8 @@ void NBSystem::addParticle(unsigned int num, std::array<double, 2> mass,
     std::vector<cl_float4> randomVel;
 
     for (unsigned int n = 0; n < num; n++) {
-        cl_float4 p; // Particle position
-        cl_float4 v; // Particle velocity
+        cl_float4 p; // Particle's position
+        cl_float4 v; // Particle's velocity
         for (unsigned int i = 0; i < 3; i++) {
             p.s[i] = posBox.minVertex()[i]
                     + (posBox.maxVertex()[i] - posBox.minVertex()[i])

@@ -1,7 +1,7 @@
 project(nbsystem)
 cmake_minimum_required(VERSION 2.8)
 aux_source_directory(. SRC_LIST)
-set(SRC_LIST ${SRC_LIST} boundingbox.h)
+set(SRC_LIST ${SRC_LIST} boundingbox.h boundary.h)
 #find_package(OpenCL REQUIRED)
 #find_package(libconfig REQUIRED)
 add_executable(${PROJECT_NAME} ${SRC_LIST})
