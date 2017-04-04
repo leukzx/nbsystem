@@ -1,127 +1,202 @@
-// EPSILON is the depth of the potential well
-#define EPSILON 1.0
-// RMIN is the distance at which the potential reaches its minimum
-#define RMIN 1.0
+#line 2 "kernel.cl" // This helps to find error in concatenated sources file
 
-// FORCE_FIELD_ACC is the mathematical expression of external field acceleration
-//#define FORCE_FIELD_ACC +(float4)(0.0f, 0.0f, -10.0f, 0.0f)
-#define FORCE_FIELD_ACC
+#define forwardeuler 1
+#define leapfrog 2
+#define rk4 3
 
-// FORCE_FIELD_ENR is the mathematical expression of external field energy
-//#define FORCE_FIELD_ENR +r.w*dot(-2*(float4)(0.0f, 0.0f, -10.0f, 0.0f), r)
-#define FORCE_FIELD_ENR
+#include "solverSettings.h"
 
-#include "boundary.h"
+#define lennardjones 0
+#define gravity 1
+#define POTENTIAL gravity
+#define GRAVITY_CONSTANT 1
 
-inline float4 get_acc_LJ(__global float4 *pos, size_t id, size_t pnum)
+inline float4 force_LJ_ptp(const float4 *pos1, const float4 *pos2)
 {
-    float4 r = pos[id]; // Position of the particle
-    float4 a = (float4) 0.0f; // Acceleration
+    // Calculates force to pos1 from pos2
 
+    // Depth of potential well
     float epsilon = EPSILON;
 
-    float rm = RMIN; // Distance at which the potential reaches its minimum (F=0)
+    // Distance at which the potential reaches its minimum (F=0)
+    float rm = RMIN;
     float rm6 = pown(rm, 6);
-    float rm12 = pown(rm6, 2);
+    float rm12 = rm6 * rm6;
 
-    float rc = 2.22724679535085 * rm; // Truncation distance
-    float Fc = -4.37754333446651E-02 * epsilon; // Force shift value
+    //float rc = 2.22724679535085 * rm; // Truncation distance
+    //float Fc = -4.37754333446651E-02 * epsilon; // Force shift value
 
-    float4 relr = (float4) 0.0f; // Relative radius-vector of p2 to p1
-    float d = 0.0f; // Distance from p2 to p1
-    float d7 = 0.0f;
-    float d13 = 0.0f;
+    // Relative radius-vector of p2 to p1
+    float4 relr;
+    relr.xyz = (*pos2).xyz - (*pos1).xyz;
+
+    // Distance from p2 to p1
+    float d2 = relr.x * relr.x + relr.y * relr.y + relr.z * relr.z;
+    float d = sqrt(d2);
+
+    //if (d <= rc) {
+        float d6 = pown(d2, 3);
+        float d7 = d6 * sqrt(d2);
+        float d13 = d7 * d6;
+        float4 f; // Force
+        f.xyz = 12
+              * epsilon
+              * (rm6 / d7 - rm12 / d13)
+              * relr.xyz / d;
+        f.w = 0.0f;
+    //}
+
+    return f;
+}
+
+inline float4 force_gravity_ptp(const float4 *pos1, const float4 *pos2)
+{
+    // Force to pos1 from pos2
+    // Gravity constant
+    float G = GRAVITY_CONSTANT;
+
+    // Relative radius-vector of p2 to p1
+    float4 relr;
+    relr.xyz = (*pos2).xyz - (*pos1).xyz;
+
+    // Squared distance from p2 to p1
+    float d2 = relr.x * relr.x + relr.y * relr.y + relr.z * relr.z;
+    float d3 = d2 * sqrt(d2);
+
+    float4 f; // Force
+    f.xyz = G * (*pos1).w * (*pos2).w * relr.xyz / d3;
+    f.w = 0.0f;
+
+    return f;
+}
+
+inline float4 acc_total(const size_t id,
+                        const float4 *r,
+                        const __global float4 *pos,
+                        const size_t pnum)
+{
+    //float4 r = pos[id]; // Position of the particle
+    float4 a = (float4) 0.0f; // Acceleration
 
     // Accleration of the i-th particle
-
+    float4 pos2;
     for (int j = 0; j < id; ++j) {
-        relr.xyz = pos[j].xyz - r.xyz;
-        d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-        if (d <= rc) {
-            d7 = pown(d, 7);
-            d13 = pown(d7, 2) / d;
-            a.xyz += (12
-                   * epsilon
-                   * (rm6 / d7 - rm12 / d13) - Fc)
-                   * relr.xyz / d;
-        }
+        pos2 = pos[j];
+#if POTENTIAL == lennardjones
+        a += force_LJ_ptp(r, &pos2);
+#elif POTENTIAL == gravity
+        a += force_gravity_ptp(r, &pos2);
+#else
+#error Error! Interaction potential is not set.
+#endif
     }
 
     for (int j = id + 1; j < pnum; ++j) {
-        relr.xyz = pos[j].xyz - r.xyz;
-        d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-        if (d <= rc) {
-            d7 = pown(d, 7);
-            d13 = pown(d7, 2) / d;
-            a.xyz += (12
-                   * epsilon
-                   * (rm6 / d7 - rm12 / d13) + Fc)
-                   * relr.xyz / d;
-        }
+        pos2 = pos[j];
+#if POTENTIAL == lennardjones
+        a += force_LJ_ptp(r, &pos2);
+#elif POTENTIAL == gravity
+        a += force_gravity_ptp(r, &pos2);
+#else
+#error Error! Interaction potential is not set.
+#endif
     }
 
+    a /= (*r).w;
     a.w = 0.0f;
-    a /= r.w;
 
-    return a;
+    return a FORCE_FIELD_ACC;
 }
 
-inline float get_energy_LJ_ptp(float4 *pos1, __global float4 *pos2)
+inline float energy_LJ_ptp(const float4 *pos1, const float4 *pos2)
 {
     // Function calculates potential energy of a particle
     // in L-J potential field of other particle.
 
-    float en = 0.0f; // Potential energy
-
+    // Depth of potential well
     float epsilon = EPSILON;
+    // Distance at which the potential reaches its minimum (F=0)
+    float rm = RMIN;
 
-    float rm = RMIN; // Distance at which the potential reaches its minimum (F=0)
-    float rm_over_d6 = 0.0f;
-    float rm_over_d12 = 0.0f;
+    //float rc = 2.22724679535085 * rm; // Truncation distance
+    //float Vc = -1.63168911360000E-02 * epsilon; // Potential shift value
 
-    float rc = 2.22724679535085 * rm; // Truncation distance
-    float Vc = -1.63168911360000E-02 * epsilon; // Potential shift value
-
-    float4 relr = (float4) 0.0f; // Relative radius-vector of p1 to p2
-    float d = 0.0f; // Distance from p1 to p2
-
+    float4 relr; // Relative radius-vector of p1 to p2
     relr.xyz = (*pos1).xyz - (*pos2).xyz;
-    d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
-    if (d <= rc) {
-        rm_over_d6 = pown(rm / d, 6);
-        rm_over_d12 = pown(rm_over_d6, 2);
-        en = epsilon * (rm_over_d12 - 2 * rm_over_d6) - Vc;
-    }
+
+    // Distance from p1 to p2
+    float d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
+    //float d = length(relr);
+    //if (d <= rc) {
+        float rm_over_d6 = pown(rm / d, 6);
+        float rm_over_d12 = rm_over_d6 * rm_over_d6;
+        float en = epsilon * (rm_over_d12 - 2 * rm_over_d6); //- Vc;
+    //}
 
     return en;
 }
 
+inline float energy_gravity_ptp(const float4 *pos1, const float4 *pos2)
+{
+    // Function calculates potential energy of a particle
+    // in gravity field of other particle.
 
-__kernel void calcEpotLJCL(__global float4 *pos, __global float *epot)
+    // Gravity constant
+    float G = GRAVITY_CONSTANT;
+
+    // Relative radius-vector of p2 to p1
+    float4 relr;
+    relr.xyz = (*pos2).xyz - (*pos1).xyz;
+
+    // Distance from p2 to p1
+    float d = sqrt(relr.x * relr.x + relr.y * relr.y + relr.z * relr.z);
+
+    float en = - G * (*pos1).w * (*pos2).w / d;
+
+    return en;
+}
+
+__kernel void calcEpotCL(const __global float4 *pos, __global float *epot)
 {
     // Kernel calculates total potential energy of each particle
 
-    size_t id = get_global_id(0);
+    size_t id = get_global_id(0); // Id of particle
     size_t pnum = get_global_size(0); // Number of particles (work-items)
     float4 r = pos[id]; // Position of the particle
 
-    float en = 0.0f; // Potential energy
+    float en = 0.0f; // Potential energy of the particle
+
+    float4 pos2; // Position of other particle
 
     // Potential energy of the particle
     for (int j = 0; j < id; ++j) {
-        en += get_energy_LJ_ptp(&r,  &pos[j]);
-   }
+        pos2 = pos[j];
+#if POTENTIAL == lennardjones
+        en += energy_LJ_ptp(&r, &pos2);
+#elif POTENTIAL == gravity
+        en += energy_gravity_ptp(&r, &pos2);
+#else
+#error Error! Interaction potential is not set.
+#endif
+    }
 
     for (int j = id + 1; j < pnum; ++j) {
-        en += get_energy_LJ_ptp(&r, &pos[j]);
+        pos2 = pos[j];
+#if POTENTIAL == lennardjones
+        en += energy_LJ_ptp(&r, &pos2);
+#elif POTENTIAL == gravity
+        en += energy_gravity_ptp(&r, &pos2);
+#else
+#error Error! Interaction potential is not set.
+#endif
     }
 
     epot[id] = en FORCE_FIELD_ENR;
 }
 
-__kernel void calcEkinCL(__global float4 *pos,
-                       __global float4 *vel,
-                       __global float *ekin)
+__kernel void calcEkinCL(const __global float4 *pos,
+                         const __global float4 *vel,
+                               __global float *ekin)
 {
     // Kernel calculates kinetic energy of each particle
     size_t id = get_global_id(0);
@@ -130,78 +205,81 @@ __kernel void calcEkinCL(__global float4 *pos,
     float m = pos[id].w; // Mass of the partice
     float4 v = vel[id]; // Velocity of the particle
 
-    float en = 0.0f; // Kinetic energy the particle
-
-    en = 0.5f * m * (v.x * v.x + v.y * v.y + v.z * v.z);
+    // Kinetic energy the particle
+    float en = 0.5f * m * (v.x * v.x + v.y * v.y + v.z * v.z);
 
     ekin[id] = en;
 }
 
-__kernel void tsForwardEulerCL(__global float4 *pos,
-                         __global float4 *vel,
-                         __global float4 *acc,
-                         float dt,
-                         __global float4 *newPos)
+__kernel void timeStepCL(const __global float4 *pos,
+                               __global float4 *vel,
+                               __global float4 *acc,
+                         const float dt,
+                               __global float4 *new_pos)
 {
-    // This function moves particles in new position.
+    // This function moves particles to new positions
+#if INTEGRATION_METHOD == leapfrog
     size_t gid = get_global_id(0);
     size_t pnum = get_global_size(0); // Number of particles (work-items)
     float4 r = pos[gid]; // Position
     float4 v = vel[gid]; // Velocity
-    //float4 a = (float4) 0.0f ; // Acceleration
-    float4 a = acc[gid];
-
-    // Particle's acceleration
-    //a = get_acc_LJ(pos, gid, pnum);
-
-    // New position and velocity
-    r.xyz += v.xyz * dt;
-    v.xyz += a.xyz * dt;
-
-    newPos[gid] = r;
-    vel[gid] = v;
-}
-
-__kernel void tsLeapfrogCL(__global float4 *pos,
-                           __global float4 *vel,
-                           __global float4 *acc,
-                           float dt,
-                           __global float4 *newPos)
-{
-    // This function moves particles in new position.
-    size_t gid = get_global_id(0);
-    size_t pnum = get_global_size(0); // Number of particles (work-items)
-    float4 r = pos[gid]; // Position
-    float4 v = vel[gid]; // Velocity
-    //float4 a = (float4) 0.0f ; // Acceleration
-    float4 a = acc[gid];
-
-    // Particle's acceleration
-    //a = get_acc_LJ(pos, gid, pnum);
+    float4 a = acc[gid]; // Acceleration
 
     // New position and velocity
     // Kick
     v.xyz += a.xyz * dt / 2;
     // Drift
     r.xyz += v.xyz * dt;
-
     // Kick
-    newPos[gid] = r;
-    a = get_acc_LJ(newPos, gid, pnum);
-
+    a = acc_total(gid, &r, pos, pnum);
     v.xyz += a.xyz * dt / 2;
 
+    new_pos[gid] = r;
     vel[gid] = v;
-    // If there where no boundaries crossing it could be possible to calculate
-    // acceleration only once per step and save it for next step.
-    // Since there is a reposition of particles as a result of boundaries check
-    // acceleration should be recalculated and it makes no sence to save
-    // acceleration here.
-    // Uncomment if there is no subsequent particles relocation.
-    // acc[gid] = a;
+
+#elif INTEGRATION_METHOD == forwardeuler
+    size_t gid = get_global_id(0);
+    size_t pnum = get_global_size(0); // Number of particles (work-items)
+    float4 r = pos[gid]; // Position
+    float4 v = vel[gid]; // Velocity
+    float4 a = acc[gid]; // Acceleration
+
+    // New position and velocity
+    r.xyz += v.xyz * dt;
+    v.xyz += a.xyz * dt;
+
+    new_pos[gid] = r;
+    vel[gid] = v;
+
+#elif INTEGRATION_METHOD == rk4
+    size_t gid = get_global_id(0);
+    size_t pnum = get_global_size(0); // Number of particles (work-items)
+    float4 r0 = pos[gid]; // Initial position
+    float4 v = vel[gid]; // Velocity
+    float4 a0 = acc[gid]; // Initial Acceleration
+
+    float dtdt = dt * dt;
+
+    float4 r = r0 + v * dt / 2 + a0 * dtdt / 8;
+    //new_pos[gid] = r;
+    //barrier(CLK_GLOBAL_MEM_FENCE);
+
+    float4 a1 = acc_total(gid, &r, pos, pnum);
+    r = r0 + v * dt + a1 * dtdt / 2;
+    //new_pos[gid] = r;
+    //barrier(CLK_GLOBAL_MEM_FENCE);
+
+    float4 a2 = acc_total(gid, &r, pos, pnum);
+    r = r0 + v * dt + (a0 + 2 * a1) * dtdt /6;
+    v += (a0 + 4 * a1 + a2) * dt / 6;
+    new_pos[gid] = r;
+    vel[gid] = v;
+#else
+#error Error! No integration method is defined.
+#endif
 }
 
-__kernel void calcAccCL(__global float4 *pos, __global float4 *acc)
+__kernel void calcAccCL(const __global float4 *pos, __global float4 *acc)
 {
     // Kernel This function calculates acceleration of particles in current position.
 
@@ -209,18 +287,16 @@ __kernel void calcAccCL(__global float4 *pos, __global float4 *acc)
     size_t pnum = get_global_size(0); // Number of particles (work-items)
     float4 r = pos[gid]; // Position of the particle
 
-    float4 a = (float4) 0.0f; // Acceleration
+    float4 a = acc_total(gid, &r, pos, pnum);
 
-    a = get_acc_LJ(pos, gid, pnum);
-
-    acc[gid] = a FORCE_FIELD_ACC;
+    acc[gid] = a;
 }
 
 
-__kernel void estimateDtCL(__global float4 *pos,
-                           __global float4 *vel,
-                           __global float4 *acc,
-                           __global float *est)
+__kernel void estimateDtCL(const __global float4 *pos,
+                           const __global float4 *vel,
+                           const __global float4 *acc,
+                                 __global float *est)
 {
     // Function estimates collision time of particle id0 with
     // particle id1.
@@ -267,24 +343,23 @@ __kernel void estimateDtCL(__global float4 *pos,
     est[id0 * width + id1] = t;
 }
 
-__kernel void checkBoundariesCL(__global float4 *pos,
-                                __global float4 *vel,
-                                __global float4 *newPos,
-                                __global Boundary *bnd,
-                                            int bnd_num)
+__kernel void checkBoundariesCL(const __global float4 *pos,
+                                      __global float4 *vel,
+                                      __global float4 *new_pos,
+                                const __global Boundary *bnd,
+                                const  int bnd_num)
 {
 //
 //https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
 //
+
     size_t gid = get_global_id(0);
     size_t bnum = bnd_num;
 
-    float4 r1 = newPos[gid]; // New position
+    float4 r1 = new_pos[gid]; // New position
     float4 r0 = pos[gid]; // Previous position
     float4 v = vel[gid];
 
-    // Border vertices
-    float4 vertex[3] = {(float4) 0.0f, (float4) 0.0f, (float4) 0.0f};
 
     // Some variables to get intersection point of displacement and boundary
     float4 tuv = (float4) 0.0f;
@@ -311,6 +386,7 @@ __kernel void checkBoundariesCL(__global float4 *pos,
         // Set intersection flag to no crossing
         flag = 0;
         // Process all boundaries
+        //__attribute__((opencl_unroll_hint(BOUNDARIES_NUM))).
         for (size_t i = 0; i < bnum; i++) {
             edge1 = bnd[i].edge1;
             edge2 = bnd[i].edge2;
@@ -383,7 +459,7 @@ __kernel void checkBoundariesCL(__global float4 *pos,
             r1 = xpoint + dr_out;
 
             // Save new values to array
-            newPos[gid] = r1;
+            new_pos[gid] = r1;
             vel[gid] = v;
         }
     } while (flag); // Do loop until there are no new intersections

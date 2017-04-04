@@ -1,4 +1,5 @@
 #include "nbsystem.h"
+#include "clkernels.h"
 
 NBSystem::NBSystem()
 {
@@ -11,7 +12,7 @@ NBSystem::NBSystem()
     curBuffIndex = 0;
 
     // Default setting is to select first available cpu device
-    setupCL(-1, CL_DEVICE_TYPE_CPU);
+    //setupCL(-1, CL_DEVICE_TYPE_CPU);
 
     h_enKin = new cl_float[pnum];
     h_enPot = new cl_float[pnum];
@@ -62,7 +63,7 @@ void NBSystem::addParticle(std::vector<cl_float4> &pos,
     initializeCLBuffers();
     setupCLKernelsArgs();
 
-    // Update accelerations
+    // Update accelerations for next timestep
     updateAcc(event);
     event.wait();
 }
@@ -79,7 +80,7 @@ void NBSystem::removeParticle(unsigned int i)
     initializeCLBuffers();
     setupCLKernelsArgs();
 
-    // Update accelerations
+    // Update accelerations for next timestep
     updateAcc(event);
     event.wait();
 }
@@ -226,7 +227,7 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
             }
         }
 
-        //The constructor attempts to use the first platform that
+        //The next constructor attempts to use the first platform that
         //has a device of the specified type.
         //cl::Context context(deviceType, contextProps);
         //cl::Context context(device);
@@ -238,7 +239,6 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
                  (cl_context_properties)(platforms.at(platformId)()), 0};
                 context = cl::Context(deviceType, cps);
             }
-
         } catch (const cl::Error &error) {
             std::cerr << "  Error while setting context: "
                       << error.what()
@@ -262,36 +262,21 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
         }
 
         // Kernel sources
-        std::string kernelSourceFileName = "kernelsSource.cl";
-        std::ifstream file(kernelSourceFileName);
-        if (!file.is_open())
-            throw std::runtime_error("Error reading kernels source file.");
+//        std::string kernelSourceFileName = "kernelsSource.cl";
+//        std::ifstream file(kernelSourceFileName);
+//        if (!file.is_open())
+//            throw std::runtime_error("Error reading kernels source file.");
 
-        std::string kernelSourceStr(std::istreambuf_iterator<char>(file),
-                                    (std::istreambuf_iterator<char>()));
-        file.close();
+//        std::string kernelSourceStr(std::istreambuf_iterator<char>(file),
+//                                    (std::istreambuf_iterator<char>()));
+//        file.close();
 
         // Create vector of kernel sources. ?There are may be more then 1?
-//        cl::Program::Sources
-//                kernelSourceVec(1,
-//                                std::make_pair(kernelSourceStr.data(),
-//                                               kernelSourceStr.length()+1));
-        cl::Program::Sources kernelSourceVec;
-
-        kernelSourceVec.emplace_back(std::make_pair(kernelSourceStr.data(),
+        cl::Program::Sources
+                kernelSourceVec(1,
+                                std::make_pair(kernelSourceStr.data(),
                                                kernelSourceStr.length()+1));
 
-        std::string kernelSourceFileName2 = "boundary.h";
-        std::ifstream file2(kernelSourceFileName2);
-        if (!file2.is_open())
-            throw std::runtime_error("Error reading kernels source file.");
-
-        std::string kernelSourceStr2(std::istreambuf_iterator<char>(file),
-                                    (std::istreambuf_iterator<char>()));
-        file2.close();
-
-        kernelSourceVec.emplace_back(std::make_pair(kernelSourceStr2.data(),
-                                               kernelSourceStr2.length()+1));
 
 
         // Create an OpenCL program object for the context
@@ -317,12 +302,12 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
         queue = cl::CommandQueue(context, device);
 
         // Create a kernel objects
-        stepInTime = cl::Kernel(program, "tsForwardEulerCL");
+        stepInTime = cl::Kernel(program, "timeStepCL");
         estimateDt = cl::Kernel(program, "estimateDtCL");
         calcAcc = cl::Kernel(program, "calcAccCL");
         checkBoundaries = cl::Kernel(program, "checkBoundariesCL");
         calcEnKin = cl::Kernel(program, "calcEkinCL");
-        calcEnPot = cl::Kernel(program, "calcEpotLJCL");
+        calcEnPot = cl::Kernel(program, "calcEpotCL");
 
         // Create event
         event = cl::Event();

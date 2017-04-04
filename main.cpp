@@ -49,14 +49,21 @@ int main(int argc, char *argv[])
     set.addParticle(set.particleFileName, nbs);
     set.addBoundary(set.boundariesFileName, nbs);
     nbs.setDtCoef(set.dtCoef);
-    nbs.addParticle(set.randomParticlesNum, set.randomMass,
-                    set.randomPosBox, set.randomVelBox);
+
+    // Add random particles
+    if (set.randomParticlesNum)
+        nbs.addParticle(set.randomParticlesNum, set.randomMass,
+                        set.randomPosBox, set.randomVelBox);
 
 //    set.addParticleUniform(set.randomParticlesNum, set.randomMass,
 //                    set.randomPosBox, set.randomVelBox, nbs);
 
     double time = set.timeStart;
-    double timeStep = set.timeStepMax;
+    double timeStepMax = (set.timeStepMax < set.writeInterval) ?
+                set.timeStepMax : set.writeInterval;
+    double timeStepEst = timeStepMax;
+    double timeStep = timeStepMax;
+
     double timeStepAvg = 0;
     double timeEnd = set.timeEnd;
     double writeInterval = set.writeInterval;
@@ -87,7 +94,8 @@ int main(int argc, char *argv[])
     if (!set.fixedTimeStep)
         do {
             // Estimate time step
-            timeStep = nbs.getEstDt();
+            timeStepEst = nbs.getEstDt();
+            timeStep = (timeStepEst < timeStepMax) ? timeStepEst : timeStepMax;
 
             // Check timeStep to not overshoot write time
             if ((writeTime + timeStep) > writeInterval)

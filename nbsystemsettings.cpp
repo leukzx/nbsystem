@@ -236,7 +236,7 @@ void NBSystemSettings::addParticle(const std::string& fileName,
             vel.emplace_back(v);
 
             sLine >> word;
-            p.s3 = std::stof(word);
+            p.s[3] = std::stof(word);
             pos.emplace_back(p);
         }
 
@@ -266,14 +266,14 @@ void NBSystemSettings::addBoundary(const std::string& fileName,
                 while (std::getline(file, line)){
                     if (line != "") {
                         cl_float4 vertice;
-                        vertice.s3 = 0.0f;
+                        vertice.s[3] = 0.0f;
                         sLine = std::stringstream(line);
                         sLine >> word;
-                        vertice.s0 = std::stod(word);
+                        vertice.s[0] = std::stod(word);
                         sLine >> word;
-                        vertice.s1 = std::stod(word);
+                        vertice.s[1] = std::stod(word);
                         sLine >> word;
-                        vertice.s2 = std::stod(word);
+                        vertice.s[2] = std::stod(word);
                         boundary.emplace_back(vertice);
                     } else break;
                 }
