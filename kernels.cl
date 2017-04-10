@@ -8,8 +8,7 @@
 
 #define lennardjones 0
 #define gravity 1
-#define POTENTIAL gravity
-#define GRAVITY_CONSTANT 1
+
 
 inline float4 force_LJ_ptp(const float4 *pos1, const float4 *pos2)
 {

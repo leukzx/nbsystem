@@ -3,6 +3,7 @@
 NBSystemSettings::NBSystemSettings(std::string fileName)
 {
     platformId = -1;
+    deviceId = 0;
     deviceType = CL_DEVICE_TYPE_CPU;
     dtCoef = 0.01;
     outPrec = 6;
@@ -51,7 +52,8 @@ NBSystemSettings::NBSystemSettings(std::string fileName)
             boundariesFileName = cfg.lookup("Boundaries_data_file").c_str();
         }
         catch(const libconfig::SettingNotFoundException &nfex) {
-            std::cerr << "No 'Write_interval' setting in configuration file."
+            std::cerr << "No 'Boundaries_data_file' setting"
+                         " in configuration file."
                       << std::endl;
             throw;
         }
@@ -66,9 +68,25 @@ NBSystemSettings::NBSystemSettings(std::string fileName)
         }
 
         try {
-            std::string type = cfg.lookup("OpenCL_device_type");
-            deviceType = type.compare("gpu")?
-                                CL_DEVICE_TYPE_CPU:CL_DEVICE_TYPE_GPU;
+            deviceId = cfg.lookup("OpenCL_device_id");
+        }
+        catch(const libconfig::SettingNotFoundException &nfex) {
+            std::cerr << "No 'OpenCL_device_id' setting."
+                         " Using first available."
+                      << std::endl;
+        }
+
+        try {
+            std::string type = cfg.lookup("OpenCL_device_type").c_str();
+            if (!type.compare("gpu")) deviceType = CL_DEVICE_TYPE_GPU;
+            else if (!type.compare("cpu")) deviceType = CL_DEVICE_TYPE_CPU;
+            else if (!type.compare("all")) deviceType = CL_DEVICE_TYPE_ALL;
+            else {
+                deviceType = CL_DEVICE_TYPE_CPU;
+                throw;
+            }
+//            deviceType = type.compare("gpu")?
+//                                CL_DEVICE_TYPE_CPU:CL_DEVICE_TYPE_GPU;
         }
         catch(const libconfig::SettingNotFoundException &nfex) {
             std::cerr << "No 'OpenCL_device_type' setting. Using CPU."
@@ -233,6 +251,7 @@ void NBSystemSettings::addParticle(const std::string& fileName,
                 sLine >> word;
                 v.s[i] = std::stof(word);
             }
+            v.s[3] = 0.0f;
             vel.emplace_back(v);
 
             sLine >> word;

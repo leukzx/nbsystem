@@ -3,13 +3,21 @@
 
 NBSystem::NBSystem()
 {
-    pnum = 0;
-    vnum = 0;
+    deviceType = CL_DEVICE_TYPE_CPU;
+    platformId = 0;
+
+	pnum = 0;
     dtCoef = 0.01;
     bndNum = 0;
     syncFlag = false;
 
     curBuffIndex = 0;
+    vectBuffSize = 0;
+    scalBuffSize = 0;
+
+    d_est_size = 0;
+    d_est_len = 0;
+
 
     // Default setting is to select first available cpu device
     //setupCL(-1, CL_DEVICE_TYPE_CPU);
@@ -126,14 +134,14 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
         }
     }
 
-    for (unsigned int i = 1 ; i < vertices.size() - 1; i++) {
-        unsigned int l[] = {0, i, i + 1};
-        for (unsigned int k : l) tri.emplace_back(vertices.at(k));
-    }
+//    for (unsigned int i = 1 ; i < vertices.size() - 1; i++) {
+//        unsigned int l[] = {0, i, i + 1};
+//        for (unsigned int k : l) tri.emplace_back(vertices.at(k));
+//    }
 
-    vnum = tri.size();
+//    vnum = tri.size();
 
-    box.setBoundingBox(tri);
+//    box.setBoundingBox(tri);
 
     for (unsigned int i = 1; i < vertices.size() - 1; i++) {
         Boundary bnd;
@@ -172,32 +180,34 @@ void NBSystem::addBoundary(std::vector<cl_float4> &vertices)
     setupCLKernelsArgs();
 }
 
-std::string NBSystem::boundariesString(unsigned int prec)
-{
-    std::ostringstream out;
+//std::string NBSystem::boundariesString(unsigned int prec)
+//{
+//    std::ostringstream out;
 
-    out << std::scientific;
-    out << std::setprecision(prec);
+//    out << std::scientific;
+//    out << std::setprecision(prec);
 
-    std::string delim = " ";
-    int cWidth = 8; // Minimum column width is 8
-    cWidth += prec;
+//    std::string delim = " ";
+//    int cWidth = 8; // Minimum column width is 8
+//    cWidth += prec;
 
-    for (unsigned int i = 0; i < tri.size(); i = i + 3) {
-        out << i / 3;
-        out << std::endl;
-        for (unsigned int j = 0; j < 3; j++) {
-            out << delim << std::setw(cWidth) << tri.at(i+j).s[0];
-            out << delim << std::setw(cWidth) << tri.at(i+j).s[1];
-            out << delim << std::setw(cWidth) << tri.at(i+j).s[2];
-            out << std::endl;
-        }
-    }
+//    for (unsigned int i = 0; i < tri.size(); i = i + 3) {
+//        out << i / 3;
+//        out << std::endl;
+//        for (unsigned int j = 0; j < 3; j++) {
+//            out << delim << std::setw(cWidth) << tri.at(i+j).s[0];
+//            out << delim << std::setw(cWidth) << tri.at(i+j).s[1];
+//            out << delim << std::setw(cWidth) << tri.at(i+j).s[2];
+//            out << std::endl;
+//        }
+//    }
 
-    return out.str().erase(out.str().size()-1);
-}
+//    return out.str().erase(out.str().size()-1);
+//}
 
-std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
+std::string NBSystem::setupCL(int platformId,
+                              int deviceId,
+                              cl_device_type deviceType)
 {
     std::ostringstream out;
     try {
@@ -227,10 +237,10 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
             }
         }
 
-        //The next constructor attempts to use the first platform that
-        //has a device of the specified type.
-        //cl::Context context(deviceType, contextProps);
-        //cl::Context context(device);
+        // The next constructor attempts to use the first avalable
+        // device of the specified type.
+        // cl::Context context(deviceType, contextProps);
+        // cl::Context context(device);
         try {
             if (platformId < 0) context = cl::Context(deviceType);
             else {
@@ -246,11 +256,11 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
             throw;
         }
 
-        // Selecting first available device of the context
+        // Selecting device with number "deviceId" from devices vector
         std::vector<cl::Device> devices;
         try {
             devices = context.getInfo<CL_CONTEXT_DEVICES>();
-            device = devices.at(0);
+            device = devices.at(deviceId);
             std::string deviceName;
             device.getInfo((cl_device_info)CL_DEVICE_NAME, &deviceName);
             out << "Selected device: " << deviceName;
@@ -284,7 +294,8 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
         // element of the vector sources into the program object
         program = cl::Program(context, kernelSourceVec);
         try {
-            program.build(devices);
+            std::string buildOptions = ("-I./");
+            program.build(devices, buildOptions.data());
         } catch (cl::Error& error) {
             std::cerr << "Program build from kernel sources failed! "
                       << error.what()
@@ -312,7 +323,7 @@ std::string NBSystem::setupCL(int platformId, cl_device_type deviceType)
         // Create event
         event = cl::Event();
 
-    } catch (cl::Error error) {
+    } catch (cl::Error &error) {
         std::cerr << "Caught exception at setupCL(): " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -364,17 +375,17 @@ void NBSystem::initializeCLBuffers()
             h_esTS = new cl_float[pnum * pnum];
         }
 
-        int vnum = tri.size(); // Number of vertices
-        if (vnum) {
-            size_t triBufSize = vnum * sizeof(cl_float4);
-            d_tri = cl::Buffer(context, CL_MEM_READ_WRITE,
-                               triBufSize);
+//        int vnum = tri.size(); // Number of vertices
+//        if (vnum) {
+//            size_t triBufSize = vnum * sizeof(cl_float4);
+//            d_tri = cl::Buffer(context, CL_MEM_READ_WRITE,
+//                               triBufSize);
 
-            queue.enqueueWriteBuffer(d_tri, CL_TRUE,
-                                     0, triBufSize,
-                                     tri.data(), NULL, &event);
-            event.wait();
-        }
+//            queue.enqueueWriteBuffer(d_tri, CL_TRUE,
+//                                     0, triBufSize,
+//                                     tri.data(), NULL, &event);
+//            event.wait();
+//        }
 
         int bndNum = boundaries.size();
         if (bndNum) {
@@ -387,7 +398,7 @@ void NBSystem::initializeCLBuffers()
                                      boundaries.data(), NULL, &event);
             event.wait();
         }
-    }  catch (cl::Error error) {
+    }  catch (cl::Error &error) {
         std::cerr << "Caught exception at initializeCLBuffers(): "
                   << error.what()
                   << '(' << error.err() << ')'
@@ -435,7 +446,7 @@ void NBSystem::setupCLKernelsArgs()
         // Set calcEnPot kernel arguments
 //      calcEnPot.setArg(0, d_pos);
         calcEnPot.setArg(1, d_enPot);
-    } catch (cl::Error error) {
+    } catch (cl::Error &error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -455,7 +466,7 @@ double NBSystem::getEnKin(cl::Event &event)
 
         queue.enqueueReadBuffer(d_enKin, CL_TRUE, 0,
                                 scalBuffSize, h_enKin);
-    } catch (cl::Error error) {
+    } catch (cl::Error &error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -481,7 +492,7 @@ double NBSystem::getEnPot(cl::Event &event)
         event.wait();
         queue.enqueueReadBuffer(d_enPot, CL_TRUE, 0,
                                 scalBuffSize, h_enPot);
-    } catch (cl::Error error) {
+    } catch (cl::Error &error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -511,7 +522,7 @@ double NBSystem::estDt(cl::Event &event)
         queue.enqueueReadBuffer(d_est, CL_TRUE, 0,
                                 d_est_size, h_esTS);
 
-    } catch (cl::Error error) {
+    } catch (cl::Error &error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -529,7 +540,7 @@ void NBSystem::updateAcc(cl::Event &event)
         queue.enqueueNDRangeKernel(calcAcc,
                                cl::NullRange, cl::NDRange(pnum),
                                cl::NullRange, NULL, &event);
-    }  catch (cl::Error error) {
+    }  catch (cl::Error &error) {
         std::cerr << "Caught exception: " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -561,7 +572,7 @@ void NBSystem::updatePos(double dt, cl::Event &event)
                                    cl::NullRange, NULL, &event);
         event.wait();
 
-    }  catch (cl::Error error) {
+    }  catch (cl::Error &error) {
         std::cerr << "Caught exception at updatePos(): " << error.what()
                   << '(' << error.err() << ')'
                   << std::endl;
@@ -629,9 +640,9 @@ const std::vector<cl_float4> *NBSystem::posData()
     return &pos;
 }
 
-const std::vector<cl_float4> *NBSystem::bndData()
+const std::vector<Boundary> *NBSystem::bndData()
 {
-    return &tri;
+    return &boundaries;
 }
 
 void NBSystem::syncArrays()
@@ -643,7 +654,7 @@ void NBSystem::syncArrays()
                                     CL_TRUE, 0, vectBuffSize, pos.data());
             queue.enqueueReadBuffer(d_vel,
                                     CL_TRUE, 0, vectBuffSize, vel.data());
-        } catch (cl::Error error) {
+        } catch (cl::Error &error) {
             std::cerr << "Caught exception at syncArrays(): " << error.what()
                       << '(' << error.err() << ')'
                       << std::endl;

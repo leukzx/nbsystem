@@ -18,10 +18,9 @@ public:
     std::string particleFileName;
     std::string boundariesFileName;
     int platformId;
+    int deviceId;
     cl_device_type deviceType;
     double dtCoef;
-    double ljEps;
-    double ljRmin;
     int outPrec;
     double writeInterval;
     double timeStepMax;

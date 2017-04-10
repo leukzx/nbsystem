@@ -29,11 +29,6 @@ private:
     // Particle velocities
     std::vector<cl_float4> vel;
 
-    // Vertices of boundaries triangles. Three consecutive elements make triangle.
-    std::vector<cl_float4> tri;
-    // Number of vertices
-    unsigned int vnum;
-
     // Boundaries vector
     std::vector<Boundary> boundaries;
     // Number of boundaries
@@ -42,13 +37,8 @@ private:
     // Minimal bounding box
     BoundingBox<double, 3> box;
 
-    // Time step etimation coefficient. Used in updateDt.
+    // Time step etimation coefficient. Used in updateDt().
     double dtCoef;
-
-//    // The depth of the potential well
-//    double ljEps;
-//    // The distance at which the potential reaches its minimum
-//    double ljRmin;
 
     void addParticle(cl_float4 &p, cl_float4 &v);
 
@@ -106,7 +96,7 @@ public:
     NBSystem();
     ~NBSystem();
 
-    std::string setupCL(int platformId, cl_device_type deviceType);
+    std::string setupCL(int platformId, int deviceId, cl_device_type deviceType);
 
     double getEnTot();
     double getEnPot();
@@ -118,7 +108,7 @@ public:
 
     const std::vector<cl_float4>* posData();
     const std::vector<cl_float4>* velData();
-    const std::vector<cl_float4>* bndData();
+    const std::vector<Boundary> *bndData();
 
     void setDtCoef(double coeff);
 

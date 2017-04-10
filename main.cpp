@@ -45,7 +45,9 @@ int main(int argc, char *argv[])
     NBSystemSettings set(argv[1]);
     NBSystem nbs;
 
-    std::cout << nbs.setupCL(set.platformId, set.deviceType) << std::endl;
+    std::cout << nbs.setupCL(set.platformId,
+                             set.deviceId,
+                             set.deviceType) << std::endl;
     set.addParticle(set.particleFileName, nbs);
     set.addBoundary(set.boundariesFileName, nbs);
     nbs.setDtCoef(set.dtCoef);
@@ -68,7 +70,7 @@ int main(int argc, char *argv[])
     double timeEnd = set.timeEnd;
     double writeInterval = set.writeInterval;
     double writeTime = 0.0; // Write time counter
-    double eps = std::numeric_limits<double>::epsilon() * timeStep;
+    double eps = std::numeric_limits<double>::epsilon() * timeEnd;
     unsigned int nStepsTotal = 0;
     unsigned int nStepsAvg = 0;
     double enKin = nbs.getEnKin();
@@ -169,6 +171,7 @@ int main(int argc, char *argv[])
 
                 nStepsAvg = 0;
                 writeTime = 0;
+
                 timeStep = set.timeStepMax;
 
                 // Print current progress to console
@@ -176,11 +179,12 @@ int main(int argc, char *argv[])
                                                   enInit, prec)
                           << std::endl;
             }
-        } while (std::fabs(timeEnd - time) > eps);
-
+        } while (std::fabs(timeEnd - time) > eps * nStepsTotal);
 
     // Write system's final state to file if it is not written already
-    if (writeTime) {
+    if (writeTime > eps) {
+
+
         timeStepAvg = writeTime / nStepsAvg;
         nStepsAvg = 0;
         writeTime = 0;
